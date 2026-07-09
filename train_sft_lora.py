@@ -364,9 +364,7 @@ def train():
         peft_config=lora_config,
         data_collator=data_collator,
         args=training_args,
-        formatting_func=lambda example: [
-            tokenizer.apply_chat_template(msg, tokenize=False) for msg in example["messages"]
-        ],
+        formatting_func=lambda example: tokenizer.apply_chat_template(example["messages"], tokenize=False),
         **trainer_extra_kwargs
     )
 
