@@ -356,9 +356,15 @@ def train():
     )
 
     # 8. 区分新老版本 TRL 来构建配置参数
-    # 如果是新版本（有 SFTConfig），max_seq_length 应该作为 SFTConfig 参数传入
+    # 如果是新版本（有 SFTConfig），max_seq_length 和 dataset_kwargs 应该作为 SFTConfig 参数传入
+    dataset_kwargs = {
+        "add_special_tokens": False, # apply_chat_template 已经处理了特殊 Token
+        "truncation": True,          # 强制截断到 max_seq_length，防止长文本导致的显存 Swap 降速
+        "max_length": args.max_seq_length,
+    }
+
     if HAS_SFT_CONFIG:
-        print("SFT 参数配置：使用新版 SFTConfig，max_seq_length 已注入 Config 中。")
+        print("SFT 参数配置：使用新版 SFTConfig，max_seq_length 和 dataset_kwargs 已注入 Config 中。")
         training_args = SFTConfig(
             output_dir=args.output_dir,
             learning_rate=args.learning_rate,
@@ -379,10 +385,11 @@ def train():
             remove_unused_columns=True,
             report_to="tensorboard" if os.path.exists("./logs") else "none",
             max_length=args.max_seq_length, # 注入 SFTConfig 字段
+            dataset_kwargs=dataset_kwargs,  # 新版 TRL 需注入 SFTConfig 字段
         )
         trainer_extra_kwargs = {}
     else:
-        print("SFT 参数配置：由于未找到 SFTConfig，回退至 TrainingArguments，max_seq_length 将在 Trainer 中直接初始化。")
+        print("SFT 参数配置：由于未找到 SFTConfig，回退至 TrainingArguments，参数将在 Trainer 中直接初始化。")
         training_args = SFTConfig(
             output_dir=args.output_dir,
             learning_rate=args.learning_rate,
@@ -403,7 +410,10 @@ def train():
             remove_unused_columns=True,
             report_to="tensorboard" if os.path.exists("./logs") else "none"
         )
-        trainer_extra_kwargs = {"max_seq_length": args.max_seq_length}
+        trainer_extra_kwargs = {
+            "max_seq_length": args.max_seq_length,
+            "dataset_kwargs": dataset_kwargs  # 老版 TRL 允许传给 SFTTrainer 构造函数
+        }
 
     # 动态检测 SFTTrainer 的构造参数，自适应使用 tokenizer 或 processing_class
     import inspect
@@ -415,11 +425,6 @@ def train():
 
     # 9. 使用 TRL SFTTrainer 启动训练
     print("开始初始化 SFTTrainer...")
-    dataset_kwargs = {
-        "add_special_tokens": False, # apply_chat_template 已经处理了特殊 Token
-        "truncation": True,          # 强制截断到 max_seq_length，防止长文本导致的显存 Swap 降速
-        "max_length": args.max_seq_length,
-    }
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -428,7 +433,6 @@ def train():
         data_collator=data_collator,
         args=training_args,
         formatting_func=lambda example: tokenizer.apply_chat_template(example["messages"], tokenize=False),
-        dataset_kwargs=dataset_kwargs,
         **trainer_extra_kwargs
     )
 
