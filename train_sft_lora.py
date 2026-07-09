@@ -8,7 +8,7 @@ Qwen3.5/Qwen2.5-Instruct LoRA/QLoRA 训练脚本
   2. 兼容包含完整 difficulty_rating JSON 的标注数据集和仅有整数 difficulty 的原始数据集。
   3. 支持 ModelScope (魔搭社区) 自动下载，完美支持国内服务器部署。
   4. QLoRA (4-bit 压缩量化) 及 FP16/BF16 混合精度。
-  5. 使用 DataCollatorForCompletionOnlyLM 进行 Masked Language Modeling，仅对助手回答（JSON 输出）计算 Loss。
+  5. 兼容新老版本 TRL (解决新版本 TRL 移除 DataCollatorForCompletionOnlyLM 的问题，提供 Fallback 机制)。
 """
 
 import os
@@ -24,8 +24,54 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     TrainingArguments,
+    DataCollatorForLanguageModeling,
 )
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer
+
+# 尝试导入 DataCollatorForCompletionOnlyLM (新版本 TRL 0.20+ 已将其移除，改用 Fallback 自定义实现)
+try:
+    from trl import DataCollatorForCompletionOnlyLM
+except ImportError:
+    print("提示: 检测到当前运行环境的 TRL 版本已移除了 DataCollatorForCompletionOnlyLM，将启用自定义 Fallback Collator。")
+    
+    class DataCollatorForCompletionOnlyLM(DataCollatorForLanguageModeling):
+        """
+        自定义 Fallback 数据整理器。
+        继承自 DataCollatorForLanguageModeling，在 batch 组装后将 prompt 区域的 label 设为 -100，
+        使模型仅对助理的 JSON 输出计算 loss。
+        """
+        def __init__(self, response_template: str, tokenizer, *args, **kwargs):
+            super().__init__(tokenizer=tokenizer, mlm=False, *args, **kwargs)
+            self.response_template = response_template
+            # 提取响应模板在分词后的 Token IDs
+            self.response_token_ids = tokenizer.encode(response_template, add_special_tokens=False)
+
+        def torch_call(self, examples):
+            # 1. 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
+            batch = super().torch_call(examples)
+            labels = batch["labels"].clone()
+            
+            # 2. 对 batch 中的每一个样本，定位 response_template 并进行 Masking
+            for i in range(len(examples)):
+                input_ids = batch["input_ids"][i].tolist()
+                
+                # 寻找匹配 response_token_ids 的子序列起点
+                idx = -1
+                n_template = len(self.response_token_ids)
+                for j in range(len(input_ids) - n_template + 1):
+                    if input_ids[j : j + n_template] == self.response_token_ids:
+                        idx = j + n_template
+                        break
+                
+                if idx != -1:
+                    # 找到了模板，将模板之前的所有 Token（即 Prompt 部分）的 Label 设为 -100
+                    labels[i, :idx] = -100
+                else:
+                    # 如果没找到模板，说明样本异常，全设为 -100 以免学习损坏的数据
+                    labels[i, :] = -100
+                    
+            batch["labels"] = labels
+            return batch
 
 # 难度级别映射表
 LEVEL_MAP = {
