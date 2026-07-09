@@ -46,8 +46,8 @@ except ImportError:
     class DataCollatorForCompletionOnlyLM(DataCollatorForLanguageModeling):
         """
         自定义 Fallback 数据整理器。
-        继承自 DataCollatorForLanguageModeling，在 batch 组装后将 prompt 区域的 label 设为 -100，
-        使模型仅对助理的 JSON 输出计算 loss。
+        继承自 DataCollatorForLanguageModeling，但绕过其内部容易出错的 tokenizer.pad(labels) 逻辑，
+        直接手动对 input_ids、attention_mask 和 labels 进行 Padding，确保维度形状绝对一致。
         """
         def __init__(self, response_template: str, tokenizer, *args, **kwargs):
             super().__init__(tokenizer=tokenizer, mlm=False, *args, **kwargs)
@@ -59,41 +59,85 @@ except ImportError:
             self.alt_token_ids = tokenizer.encode(alt_template, add_special_tokens=False)
 
         def torch_call(self, examples):
-            # 过滤掉非 Tensor 类型的列 (如 messages)，防止 pad 方法崩溃
+            # 1. 过滤掉无法被转化为 Tensor 的非模型输入字段 (例如 'messages')
             examples = [{k: v for k, v in ex.items() if k != "messages"} for ex in examples]
-            # 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
-            batch = super().torch_call(examples)
-            labels = batch["labels"].clone()
             
-            # 对 batch 中的每一个样本，定位 response_template 并进行 Masking
-            for i in range(len(examples)):
-                input_ids = batch["input_ids"][i].tolist()
+            # 2. 收集原始序列（确保将所有 numpy array/torch tensor 归一化为原生 python list 避免类型冲突）
+            batch_input_ids = []
+            batch_attention_mask = []
+            batch_labels = []
+            
+            for ex in examples:
+                ids = ex["input_ids"]
+                if torch.is_tensor(ids):
+                    ids = ids.tolist()
+                batch_input_ids.append(ids)
                 
-                # 1. 尝试匹配带换行的完整模板
+                mask = ex.get("attention_mask", [1] * len(ids))
+                if torch.is_tensor(mask):
+                    mask = mask.tolist()
+                batch_attention_mask.append(mask)
+                
+                lbl = ex.get("labels", ids)
+                if torch.is_tensor(lbl):
+                    lbl = lbl.tolist()
+                batch_labels.append(lbl)
+                
+            # 3. 确定 Batch 最大序列长度
+            max_len = max(len(ids) for ids in batch_input_ids)
+            
+            # 4. 手动对其进行 Padding (与 Qwen 一致，使用 right padding)
+            padded_input_ids = []
+            padded_attention_mask = []
+            padded_labels = []
+            
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+            padding_side = getattr(self.tokenizer, "padding_side", "right")
+            
+            for ids, mask, lbl in zip(batch_input_ids, batch_attention_mask, batch_labels):
+                remainder = max_len - len(ids)
+                if padding_side == "left":
+                    padded_input_ids.append([pad_token_id] * remainder + ids)
+                    padded_attention_mask.append([0] * remainder + mask)
+                    padded_labels.append([-100] * remainder + lbl)
+                else:
+                    padded_input_ids.append(ids + [pad_token_id] * remainder)
+                    padded_attention_mask.append(mask + [0] * remainder)
+                    padded_labels.append(lbl + [-100] * remainder)
+                    
+            # 5. 执行 Completion-Only Mask 遮罩逻辑
+            for i in range(len(examples)):
+                ids = batch_input_ids[i] # 基于未填充的原始序列定位模板，避免填充偏移
                 idx = -1
                 n_template = len(self.response_token_ids)
-                for j in range(len(input_ids) - n_template + 1):
-                    if input_ids[j : j + n_template] == self.response_token_ids:
+                for j in range(len(ids) - n_template + 1):
+                    if ids[j : j + n_template] == self.response_token_ids:
                         idx = j + n_template
                         break
-                
-                # 2. 如果没找到，尝试匹配不带换行的模板
+                        
+                # 备用匹配不含换行的前缀
                 if idx == -1:
                     n_alt = len(self.alt_token_ids)
-                    for j in range(len(input_ids) - n_alt + 1):
-                        if input_ids[j : j + n_alt] == self.alt_token_ids:
+                    for j in range(len(ids) - n_alt + 1):
+                        if ids[j : j + n_alt] == self.alt_token_ids:
                             idx = j + n_alt
                             break
                             
                 if idx != -1:
-                    # 找到了模板，将模板之前的所有 Token（即 Prompt 部分）的 Label 设为 -100
-                    labels[i, :idx] = -100
+                    # 如果找到了模板，将模板之前（Prompt部分）的 Label 设为 -100
+                    remainder = max_len - len(ids)
+                    offset = remainder if padding_side == "left" else 0
+                    for j in range(offset + idx):
+                        padded_labels[i][j] = -100
                 else:
-                    # 兜底：如果完全没有匹配到模板，保留该样本原有的 labels，不进行 mask，避免全设为 -100 导致 loss=0 训练报错
-                    # 同时打印一个警告信息
                     print(f"警告: 样本 {i} 中未检测到助理回复模板 '{self.response_template.strip()}'，跳过 Loss 屏蔽...")
                     
-            batch["labels"] = labels
+            # 6. 打包并返回 PyTorch Tensor 字典
+            batch = {
+                "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+                "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
+                "labels": torch.tensor(padded_labels, dtype=torch.long),
+            }
             return batch
 
 # 难度级别映射表
