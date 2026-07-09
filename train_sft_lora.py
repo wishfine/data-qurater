@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Qwen2.5-Instruct LoRA/QLoRA 训练脚本
+Qwen3.5/Qwen2.5-Instruct LoRA/QLoRA 训练脚本
 用于物理和化学题目的难度及特征结构化打标微调。
 支持：
   1. 从提示词文件动态加载系统 prompt。
   2. 兼容包含完整 difficulty_rating JSON 的标注数据集和仅有整数 difficulty 的原始数据集。
-  3. QLoRA (4-bit 压缩量化) 及 FP16/BF16 混合精度。
-  4. 使用 DataCollatorForCompletionOnlyLM 进行 Masked Language Modeling，仅对助手回答（JSON 输出）计算 Loss。
+  3. 支持 ModelScope (魔搭社区) 自动下载，完美支持国内服务器部署。
+  4. QLoRA (4-bit 压缩量化) 及 FP16/BF16 混合精度。
+  5. 使用 DataCollatorForCompletionOnlyLM 进行 Masked Language Modeling，仅对助手回答（JSON 输出）计算 Loss。
 """
 
 import os
@@ -133,9 +134,13 @@ def process_jsonl_data(data_path: str, system_prompt: str) -> List[Dict[str, Any
     return processed_samples
 
 def train():
-    parser = argparse.ArgumentParser(description="Qwen2.5-Instruct LoRA/QLoRA Fine-tuning")
-    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen2.5-3B-Instruct",
-                        help="Hugging Face 上的模型名称或本地路径")
+    parser = argparse.ArgumentParser(description="Qwen SFT LoRA/QLoRA Fine-tuning")
+    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3.5-4B-Instruct",
+                        help="Hugging Face / ModelScope 模型 ID，或本地路径")
+    parser.add_argument("--model_cache_dir", type=str, default="/home/zhangyonglin/models",
+                        help="模型缓存目录")
+    parser.add_argument("--use_modelscope", type=str, default="true", choices=["true", "false"],
+                        help="是否通过 ModelScope (魔搭) 自动下载，国内服务器推荐使用")
     parser.add_argument("--train_data", type=str, required=True, help="训练 JSONL 数据集路径")
     parser.add_argument("--val_data", type=str, default=None, help="可选的验证 JSONL 数据集路径")
     parser.add_argument("--prompt_file", type=str, required=True, help="对应学科的打标提示词 .txt 文件路径")
@@ -177,7 +182,21 @@ def train():
         val_samples = process_jsonl_data(args.val_data, system_prompt)
         val_dataset = Dataset.from_list(val_samples)
 
-    # 3. 配置模型量化 (QLoRA)
+    # 3. 魔搭 ModelScope 模型在线/本地定位
+    model_path = args.model_name_or_path
+    if not os.path.exists(model_path):
+        if args.use_modelscope.lower() == "true":
+            print(f"检测到本地不存在路径 '{model_path}'，正在通过 ModelScope 自动下载模型到 '{args.model_cache_dir}' ...")
+            try:
+                from modelscope import snapshot_download
+                model_path = snapshot_download(args.model_name_or_path, cache_dir=args.model_cache_dir)
+                print(f"ModelScope 模型下载并定位成功，本地路径为: {model_path}")
+            except Exception as e:
+                print(f"ModelScope 下载失败: {e}。将退回到普通 Hugging Face 模式加载...")
+        else:
+            print(f"本地不存在路径 '{model_path}'，将直接使用 Hugging Face 进行在线加载...")
+
+    # 4. 配置模型量化 (QLoRA)
     bnb_config = None
     if args.use_qlora:
         print("正在启用 QLoRA 4-bit 量化配置...")
@@ -188,25 +207,24 @@ def train():
             bnb_4bit_use_double_quant=True,
         )
 
-    # 4. 加载 Tokenizer 与 Base Model
-    print(f"正在加载基座模型：{args.model_name_or_path} ...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+    # 5. 加载 Tokenizer 与 Base Model
+    print(f"正在加载基座模型：{model_path} ...")
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
+        model_path,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        # 如果不使用量化且有足够的显卡，可以使用 bf16 加载模型以加快训练
         torch_dtype=torch.bfloat16 if args.bf16 and not args.use_qlora else (torch.float16 if args.fp16 else torch.float32)
     )
 
     if args.use_qlora:
         model = prepare_model_for_kbit_training(model)
 
-    # 5. 配置 LoRA 适配器 (针对 Qwen2.5 的标准 Linear 层)
+    # 6. 配置 LoRA 适配器 (针对 Qwen 系列的标准 Linear 层)
     lora_config = LoraConfig(
         r=args.r,
         lora_alpha=args.lora_alpha,
@@ -216,7 +234,7 @@ def train():
         task_type="CAUSAL_LM",
     )
     
-    # 6. 配置仅对 Assistant 的回答进行计算的 Collator (Masked Loss)
+    # 7. 配置仅对 Assistant 的回答进行计算的 Collator (Masked Loss)
     # 对于 ChatML 格式的 Qwen，助理的回答部分前缀为 "<|im_start|>assistant\n"
     response_template = "<|im_start|>assistant\n"
     data_collator = DataCollatorForCompletionOnlyLM(
@@ -224,7 +242,7 @@ def train():
         tokenizer=tokenizer
     )
 
-    # 7. 训练超参数
+    # 8. 训练超参数
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         learning_rate=args.learning_rate,
@@ -246,7 +264,7 @@ def train():
         report_to="tensorboard" if os.path.exists("./logs") else "none"
     )
 
-    # 8. 使用 TRL SFTTrainer 启动训练
+    # 9. 使用 TRL SFTTrainer 启动训练
     print("开始初始化 SFTTrainer...")
     trainer = SFTTrainer(
         model=model,
@@ -266,7 +284,7 @@ def train():
     print("开始训练...")
     trainer.train()
 
-    # 9. 保存微调权重
+    # 10. 保存微调权重
     print(f"训练完成！正在将 LoRA 权重保存至：{args.output_dir}")
     trainer.model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
