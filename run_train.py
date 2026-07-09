@@ -28,8 +28,8 @@ physics_train_cmd = [
     "--model_name_or_path", BASE_MODEL,
     "--model_cache_dir", CACHE_DIR,
     "--use_modelscope", "true",
-    "--train_data", "../prompt_test/physics_difficulty_rated_results.jsonl", # 指向有 GPT 标注的 dataset
-    "--prompt_file", "../初中物理难度打标提示词.txt",
+    "--train_data", "data/physics_difficulty_rated_results.jsonl", # 现已移动至项目目录内
+    "--prompt_file", "prompts/初中物理难度打标提示词.txt",            # 现已移动至项目目录内
     "--output_dir", "./outputs/qwen_physics_lora",
     "--use_qlora",
     "--bf16",
@@ -49,8 +49,8 @@ chemistry_train_cmd = [
     "--model_name_or_path", BASE_MODEL,
     "--model_cache_dir", CACHE_DIR,
     "--use_modelscope", "true",
-    "--train_data", "../prompt_test/chemistry_difficulty_rated_results.jsonl",
-    "--prompt_file", "../初中化学难度打标提示词.txt",
+    "--train_data", "data/chemistry_difficulty_rated_results.jsonl", # 现已移动至项目目录内
+    "--prompt_file", "prompts/初中化学难度打标提示词.txt",            # 现已移动至项目目录内
     "--output_dir", "./outputs/qwen_chemistry_lora",
     "--use_qlora",
     "--bf16",
