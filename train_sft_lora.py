@@ -298,7 +298,7 @@ def train():
         logging_steps=args.logging_steps,
         save_strategy=args.save_strategy,
         save_steps=args.save_steps,
-        evaluation_strategy=args.eval_strategy,
+        eval_strategy=args.eval_strategy,
         eval_steps=args.eval_steps,
         bf16=args.bf16,
         fp16=args.fp16,
