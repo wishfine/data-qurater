@@ -256,7 +256,7 @@ def train():
                         help="是否通过 ModelScope (魔搭) 自动下载，国内服务器推荐使用")
     parser.add_argument("--train_data", type=str, required=True, help="训练 JSONL 数据集路径")
     parser.add_argument("--val_data", type=str, default=None, help="可选的验证 JSONL 数据集路径")
-    parser.add_argument("--prompt_file", type=str, required=True, help="对应学科的打标提示词 .txt 文件路径")
+    parser.add_argument("--prompt_file", type=str, default=None, help="对应学科的打标提示词 .txt 文件路径")
     parser.add_argument("--output_dir", type=str, default="./qwen_lora_output", help="LoRA 权重保存路径")
     
     # 显存及量化参数
@@ -265,7 +265,11 @@ def train():
     parser.add_argument("--fp16", action="store_true", help="是否启用 FP16 混合精度")
     
     # 超参数配置
-    parser.add_argument("--max_seq_length", type=int, default=2048, help="最大序列截断长度")
+    parser.add_argument("--max_seq_length", type=int, default=1024, help="最大序列截断长度")
+    parser.add_argument("--prompt_mode", type=str, default="compact", choices=["compact", "full"],
+                        help="系统提示词模式：compact (精简版) 或 full (完整版)")
+    parser.add_argument("--max_train_samples", type=int, default=None,
+                        help="仅抽取指定数量样本进行快速训练验证 (debug)")
     parser.add_argument("--r", type=int, default=16, help="LoRA Rank")
     parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA Alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA Dropout")
@@ -283,13 +287,27 @@ def train():
     args = parser.parse_args()
 
     # 1. 动态加载学科打标的系统提示词
-    print(f"正在从 {args.prompt_file} 加载系统提示词...")
-    system_prompt = load_system_prompt(args.prompt_file)
+    if args.prompt_mode == "compact":
+        print("系统提示词模式: compact (精简版)。")
+        system_prompt = (
+            "你是初中理科题目难度打标模型。"
+            "请根据题干、选项和解析，输出符合要求的 JSON 难度分析结果。"
+            "难度等级只能从给定等级集合中选择，必须输出合法 JSON。"
+        )
+    else:
+        print(f"系统提示词模式: full (完整版)。正在从 {args.prompt_file} 加载系统提示词...")
+        if not args.prompt_file:
+            raise ValueError("在 full 提示词模式下，必须指定 --prompt_file 参数！")
+        system_prompt = load_system_prompt(args.prompt_file)
 
     # 2. 读取并构建 Hugging Face 格式 Dataset
     train_samples = process_jsonl_data(args.train_data, system_prompt)
     train_dataset = Dataset.from_list(train_samples)
     
+    if args.max_train_samples is not None:
+        print(f"仅抽取前 {args.max_train_samples} 条样本进行快速训练验证 (debug)")
+        train_dataset = train_dataset.select(range(min(args.max_train_samples, len(train_dataset))))
+        
     val_dataset = None
     if args.val_data:
         val_samples = process_jsonl_data(args.val_data, system_prompt)
@@ -326,13 +344,47 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if args.bf16 and not args.use_qlora else (torch.float16 if args.fp16 else torch.float32)
-    )
+    model = None
+    # 尝试使用 Flash Attention 2，失败则回退到 sdpa (Scaled Dot Product Attention)
+    try:
+        print("尝试启用 flash_attention_2 ...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            quantization_config=bnb_config,
+            device_map={"": 0} if torch.cuda.is_available() else "auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16 if args.bf16 and not args.use_qlora else (torch.float16 if args.fp16 else torch.float32),
+            attn_implementation="flash_attention_2"
+        )
+        print("成功启用 flash_attention_2")
+    except Exception as e:
+        print(f"无法启用 flash_attention_2: {e}。将退回到 sdpa...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            quantization_config=bnb_config,
+            device_map={"": 0} if torch.cuda.is_available() else "auto",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16 if args.bf16 and not args.use_qlora else (torch.float16 if args.fp16 else torch.float32),
+            attn_implementation="sdpa"
+        )
+
+    model.config.use_cache = False
+
+    # 排查 CPU offload 并打印硬件状态
+    print("CUDA available:", torch.cuda.is_available())
+    print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)
+    
+    device_map_val = getattr(model, "hf_device_map", None)
+    print("Model device map:", device_map_val)
+    print("First parameter device:", next(model.parameters()).device)
+    
+    if device_map_val is not None:
+        offloaded_keys = [k for k, v in device_map_val.items() if v in ["cpu", "disk", "offload"]]
+        if offloaded_keys:
+            raise RuntimeError(
+                f"错误: 检测到模型部分权重被 Offload 到了 CPU 或 Disk (offloaded keys: {offloaded_keys})！"
+                f"这会导致训练极慢（可能是显存不足或 device_map 设置错误）。请调整配置。"
+            )
 
     if args.use_qlora:
         model = prepare_model_for_kbit_training(model)
@@ -386,6 +438,10 @@ def train():
             report_to="tensorboard" if os.path.exists("./logs") else "none",
             max_length=args.max_seq_length, # 注入 SFTConfig 字段
             dataset_kwargs=dataset_kwargs,  # 新版 TRL 需注入 SFTConfig 字段
+            dataloader_num_workers=4,
+            dataloader_pin_memory=True,
+            group_by_length=True,
+            gradient_checkpointing=True,
         )
         trainer_extra_kwargs = {}
     else:
@@ -408,7 +464,11 @@ def train():
             warmup_ratio=0.03,
             seed=args.seed,
             remove_unused_columns=True,
-            report_to="tensorboard" if os.path.exists("./logs") else "none"
+            report_to="tensorboard" if os.path.exists("./logs") else "none",
+            dataloader_num_workers=4,
+            dataloader_pin_memory=True,
+            group_by_length=True,
+            gradient_checkpointing=True,
         )
         trainer_extra_kwargs = {
             "max_seq_length": args.max_seq_length,
@@ -436,6 +496,66 @@ def train():
         **trainer_extra_kwargs
     )
 
+    # 9.5. Tokenization Sanity Check (防止超长 prompt 导致数据在 max_seq_length 下被截断)
+    print("=== 开始 Tokenization Sanity Check ===")
+    check_indices = [0, min(1, len(train_dataset) - 1)]
+    for idx in check_indices:
+        sample = train_dataset[idx]
+        # 使用 apply_chat_template 将对话渲染为单条文本
+        formatted_text = tokenizer.apply_chat_template(sample["messages"], tokenize=False)
+        # 用配置的 max_length 分词，查看截断行为
+        encoded = tokenizer(
+            formatted_text, 
+            truncation=True, 
+            max_length=args.max_seq_length, 
+            add_special_tokens=False
+        )
+        input_ids = encoded["input_ids"]
+        print(f"样例 {idx} 经过 max_seq_length={args.max_seq_length} 截断后的 token 数量: {len(input_ids)}")
+        
+        # 1. 检查是否包含 assistant 起始标记
+        assistant_token_ids = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+        has_assistant = False
+        n_template = len(assistant_token_ids)
+        for j in range(len(input_ids) - n_template + 1):
+            if input_ids[j : j + n_template] == assistant_token_ids:
+                has_assistant = True
+                break
+        
+        # 2. 检查是否包含 目标字段 比如 difficulty, difficulty_rating, rating 等
+        decoded_text = tokenizer.decode(input_ids)
+        has_target_field = any(field in decoded_text for field in ["difficulty", "difficulty_rating", "rating"])
+        
+        # 3. 检查 labels 中非 -100 的 token 数量
+        collated = data_collator([encoded])
+        labels = collated["labels"][0].tolist()
+        non_masked_count = sum(1 for l in labels if l != -100)
+        
+        print(f"  - 是否包含 assistant 起始标记: {has_assistant}")
+        print(f"  - 是否包含目标打标字段: {has_target_field}")
+        print(f"  - labels 中非 -100 的 token 数量: {non_masked_count}")
+        
+        if not has_assistant:
+            raise ValueError(
+                f"错误: 样例 {idx} 分词截断后不包含 assistant 起始标记！"
+                "这说明 prompt/题干 太长，导致模型回复部分被完全截断了。请缩短 prompt 或增加 max_seq_length。"
+            )
+        if not has_target_field:
+            raise ValueError(
+                f"错误: 样例 {idx} 分词截断后不包含 difficulty/difficulty_rating 目标打标字段！"
+                "回复部分已被截断。请缩短 prompt 或增加 max_seq_length。"
+            )
+        if non_masked_count == 0:
+            raise ValueError(
+                f"错误: 样例 {idx} 分词截断后 labels 全为 -100！"
+                "说明没有用于计算 Loss 的有效样本部分。请检查。"
+            )
+    print("=== Tokenization Sanity Check 通过 ===")
+
+    # 单卡 debug 训练速度判断标准：
+    # 1 step < 30 秒：可接受
+    # 1 step 30~60 秒：偏慢，但可以继续优化
+    # 1 step > 120 秒：仍然有严重问题
     print("开始训练...")
     trainer.train()
 

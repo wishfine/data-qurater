@@ -11,10 +11,35 @@ import os
 # 定义基础配置
 BASE_MODEL = "Qwen/Qwen3.5-4B"  # 已修改为您实际下载的魔搭社区模型 ID (Qwen/Qwen3.5-4B)
 CACHE_DIR = "/home/zhangyonglin/models"  # 指定的服务器模型缓存目录
-MAX_LEN = 2048
-EPOCHS = 3
-BATCH_SIZE = 4
-GRAD_ACCUM = 4
+
+# 单卡 debug 训练速度判断标准：
+# 1 step < 30 秒：可接受
+# 1 step 30~60 秒：偏慢，但可以继续优化
+# 1 step > 120 秒：仍然有严重问题
+
+DEBUG = True  # 设置为 True 启用快速 debug 验证模型速度，设置为 False 运行完整微调训练
+
+# 根据模式设置不同的训练参数
+if DEBUG:
+    MAX_LEN = 1024
+    BATCH_SIZE = 2
+    GRAD_ACCUM = 8
+    EPOCHS = 1
+    SAVE_STRATEGY = "no"
+    EVAL_STRATEGY = "no"
+    LOGGING_STEPS = 1
+    PROMPT_MODE = "compact"
+    MAX_TRAIN_SAMPLES = 64
+else:
+    MAX_LEN = 1024  # 默认使用 1024，如果想调大可以改到 1536
+    BATCH_SIZE = 4
+    GRAD_ACCUM = 4
+    EPOCHS = 3
+    SAVE_STRATEGY = "epoch"
+    EVAL_STRATEGY = "no"
+    LOGGING_STEPS = 10
+    PROMPT_MODE = "compact"
+    MAX_TRAIN_SAMPLES = None
 
 # 如果您在多卡服务器上，可以使用 CUDA_VISIBLE_DEVICES 限制 GPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -38,7 +63,13 @@ physics_train_cmd = [
     "--num_train_epochs", str(EPOCHS),
     "--per_device_train_batch_size", str(BATCH_SIZE),
     "--gradient_accumulation_steps", str(GRAD_ACCUM),
+    "--save_strategy", SAVE_STRATEGY,
+    "--eval_strategy", EVAL_STRATEGY,
+    "--logging_steps", str(LOGGING_STEPS),
+    "--prompt_mode", PROMPT_MODE,
 ]
+if MAX_TRAIN_SAMPLES is not None:
+    physics_train_cmd.extend(["--max_train_samples", str(MAX_TRAIN_SAMPLES)])
 
 print("=== 开始训练初中物理难度打标 LoRA 模型 ===")
 run_cmd(physics_train_cmd)
@@ -59,7 +90,13 @@ chemistry_train_cmd = [
     "--num_train_epochs", str(EPOCHS),
     "--per_device_train_batch_size", str(BATCH_SIZE),
     "--gradient_accumulation_steps", str(GRAD_ACCUM),
+    "--save_strategy", SAVE_STRATEGY,
+    "--eval_strategy", EVAL_STRATEGY,
+    "--logging_steps", str(LOGGING_STEPS),
+    "--prompt_mode", PROMPT_MODE,
 ]
+if MAX_TRAIN_SAMPLES is not None:
+    chemistry_train_cmd.extend(["--max_train_samples", str(MAX_TRAIN_SAMPLES)])
 
 print("=== 开始训练初中化学难度打标 LoRA 模型 ===")
 run_cmd(chemistry_train_cmd)
