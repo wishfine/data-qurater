@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Qwen3.5-Instruct LoRA/QLoRA 训练启动脚本。
-您可以在服务器上运行此脚本，它会使用 ModelScope 自动下载 Qwen3.5-4B-Instruct 并依次训练物理和化学题目的 LoRA 模型。
+Qwen3.5 LoRA/QLoRA 训练启动脚本。
+您可以在服务器上运行此脚本，它会加载您通过 ModelScope 下载至 /home/zhangyonglin/models 的 Qwen/Qwen3.5-4B 基座模型，
+并依次训练物理和化学题目的 LoRA 模型。
 """
 import subprocess
 import os
 
 # 定义基础配置
-BASE_MODEL = "qwen/Qwen3.5-4B-Instruct"  # 使用您指定的 Qwen3.5-4B 规格，ModelScope 魔搭 ID
+BASE_MODEL = "Qwen/Qwen3.5-4B"  # 已修改为您实际下载的魔搭社区模型 ID (Qwen/Qwen3.5-4B)
 CACHE_DIR = "/home/zhangyonglin/models"  # 指定的服务器模型缓存目录
 MAX_LEN = 2048
 EPOCHS = 3
