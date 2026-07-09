@@ -415,6 +415,14 @@ def train():
         "max_length": args.max_seq_length,
     }
 
+    save_strategy_to_use = args.save_strategy
+    save_steps_to_use = args.save_steps
+    if save_strategy_to_use == "steps":
+        # 动态计算每 0.25 epoch 的步数
+        steps_per_epoch = len(train_dataset) / (args.per_device_train_batch_size * args.gradient_accumulation_steps)
+        save_steps_to_use = max(1, int(steps_per_epoch * 0.25))
+        print(f"检测到保存策略为 steps，动态计算得出每 0.25 Epoch 对应的保存步长为: {save_steps_to_use}")
+
     if HAS_SFT_CONFIG:
         print("SFT 参数配置：使用新版 SFTConfig，max_seq_length 和 dataset_kwargs 已注入 Config 中。")
         training_args = SFTConfig(
@@ -424,8 +432,8 @@ def train():
             per_device_train_batch_size=args.per_device_train_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             logging_steps=args.logging_steps,
-            save_strategy=args.save_strategy,
-            save_steps=args.save_steps,
+            save_strategy=save_strategy_to_use,
+            save_steps=save_steps_to_use,
             eval_strategy=args.eval_strategy,
             eval_steps=args.eval_steps,
             bf16=args.bf16,
@@ -453,8 +461,8 @@ def train():
             per_device_train_batch_size=args.per_device_train_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             logging_steps=args.logging_steps,
-            save_strategy=args.save_strategy,
-            save_steps=args.save_steps,
+            save_strategy=save_strategy_to_use,
+            save_steps=save_steps_to_use,
             eval_strategy=args.eval_strategy,
             eval_steps=args.eval_steps,
             bf16=args.bf16,

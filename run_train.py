@@ -25,7 +25,7 @@ if DEBUG:
     BATCH_SIZE = 2
     GRAD_ACCUM = 8
     EPOCHS = 1
-    SAVE_STRATEGY = "no"
+    SAVE_STRATEGY = "steps"
     EVAL_STRATEGY = "no"
     LOGGING_STEPS = 1
     PROMPT_MODE = "compact"
@@ -35,7 +35,7 @@ else:
     BATCH_SIZE = 4
     GRAD_ACCUM = 4
     EPOCHS = 3
-    SAVE_STRATEGY = "epoch"
+    SAVE_STRATEGY = "steps"
     EVAL_STRATEGY = "no"
     LOGGING_STEPS = 10
     PROMPT_MODE = "compact"
@@ -76,29 +76,29 @@ run_cmd(physics_train_cmd)
 
 
 # ----------------- 2. 化学 LoRA 训练 -----------------
-chemistry_train_cmd = [
-    "python", "train_sft_lora.py",
-    "--model_name_or_path", BASE_MODEL,
-    "--model_cache_dir", CACHE_DIR,
-    "--use_modelscope", "true",
-    "--train_data", "data/chemistry_difficulty_rated_results.jsonl", # 现已移动至项目目录内
-    "--prompt_file", "prompts/初中化学难度打标提示词.txt",            # 现已移动至项目目录内
-    "--output_dir", "./outputs/qwen_chemistry_lora",
-    "--use_qlora",
-    "--bf16",
-    "--max_seq_length", str(MAX_LEN),
-    "--num_train_epochs", str(EPOCHS),
-    "--per_device_train_batch_size", str(BATCH_SIZE),
-    "--gradient_accumulation_steps", str(GRAD_ACCUM),
-    "--save_strategy", SAVE_STRATEGY,
-    "--eval_strategy", EVAL_STRATEGY,
-    "--logging_steps", str(LOGGING_STEPS),
-    "--prompt_mode", PROMPT_MODE,
-]
-if MAX_TRAIN_SAMPLES is not None:
-    chemistry_train_cmd.extend(["--max_train_samples", str(MAX_TRAIN_SAMPLES)])
+# chemistry_train_cmd = [
+#     "python", "train_sft_lora.py",
+#     "--model_name_or_path", BASE_MODEL,
+#     "--model_cache_dir", CACHE_DIR,
+#     "--use_modelscope", "true",
+#     "--train_data", "data/chemistry_difficulty_rated_results.jsonl", # 现已移动至项目目录内
+#     "--prompt_file", "prompts/初中化学难度打标提示词.txt",            # 现已移动至项目目录内
+#     "--output_dir", "./outputs/qwen_chemistry_lora",
+#     "--use_qlora",
+#     "--bf16",
+#     "--max_seq_length", str(MAX_LEN),
+#     "--num_train_epochs", str(EPOCHS),
+#     "--per_device_train_batch_size", str(BATCH_SIZE),
+#     "--gradient_accumulation_steps", str(GRAD_ACCUM),
+#     "--save_strategy", SAVE_STRATEGY,
+#     "--eval_strategy", EVAL_STRATEGY,
+#     "--logging_steps", str(LOGGING_STEPS),
+#     "--prompt_mode", PROMPT_MODE,
+# ]
+# if MAX_TRAIN_SAMPLES is not None:
+#     chemistry_train_cmd.extend(["--max_train_samples", str(MAX_TRAIN_SAMPLES)])
 
-print("=== 开始训练初中化学难度打标 LoRA 模型 ===")
-run_cmd(chemistry_train_cmd)
+# print("=== 开始训练初中化学难度打标 LoRA 模型 ===")
+# run_cmd(chemistry_train_cmd)
 
-print("=== 所有科目 LoRA 训练完成！ ===")
+print("=== 物理科目 LoRA 训练已完成！(已跳过化学训练) ===")
