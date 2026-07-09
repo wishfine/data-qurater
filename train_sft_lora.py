@@ -415,6 +415,11 @@ def train():
 
     # 9. 使用 TRL SFTTrainer 启动训练
     print("开始初始化 SFTTrainer...")
+    dataset_kwargs = {
+        "add_special_tokens": False, # apply_chat_template 已经处理了特殊 Token
+        "truncation": True,          # 强制截断到 max_seq_length，防止长文本导致的显存 Swap 降速
+        "max_length": args.max_seq_length,
+    }
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -423,6 +428,7 @@ def train():
         data_collator=data_collator,
         args=training_args,
         formatting_func=lambda example: tokenizer.apply_chat_template(example["messages"], tokenize=False),
+        dataset_kwargs=dataset_kwargs,
         **trainer_extra_kwargs
     )
 
