@@ -59,6 +59,8 @@ except ImportError:
             self.alt_token_ids = tokenizer.encode(alt_template, add_special_tokens=False)
 
         def torch_call(self, examples):
+            # 过滤掉非 Tensor 类型的列 (如 messages)，防止 pad 方法崩溃
+            examples = [{k: v for k, v in ex.items() if k != "messages"} for ex in examples]
             # 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
             batch = super().torch_call(examples)
             labels = batch["labels"].clone()
@@ -330,7 +332,7 @@ def train():
             lr_scheduler_type="cosine",
             warmup_ratio=0.03,
             seed=args.seed,
-            remove_unused_columns=False, # 防止 SFTTrainer 过滤掉 messages 字段
+            remove_unused_columns=True,
             report_to="tensorboard" if os.path.exists("./logs") else "none",
             max_length=args.max_seq_length, # 注入 SFTConfig 字段
         )
@@ -354,7 +356,7 @@ def train():
             lr_scheduler_type="cosine",
             warmup_ratio=0.03,
             seed=args.seed,
-            remove_unused_columns=False,
+            remove_unused_columns=True,
             report_to="tensorboard" if os.path.exists("./logs") else "none"
         )
         trainer_extra_kwargs = {"max_seq_length": args.max_seq_length}
