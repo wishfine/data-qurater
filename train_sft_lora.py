@@ -320,7 +320,7 @@ def train():
             seed=args.seed,
             remove_unused_columns=False, # 防止 SFTTrainer 过滤掉 messages 字段
             report_to="tensorboard" if os.path.exists("./logs") else "none",
-            max_seq_length=args.max_seq_length, # 注入 SFTConfig 字段
+            max_length=args.max_seq_length, # 注入 SFTConfig 字段
         )
         trainer_extra_kwargs = {}
     else:
