@@ -438,11 +438,11 @@ def train():
             report_to="tensorboard" if os.path.exists("./logs") else "none",
             max_length=args.max_seq_length, # 注入 SFTConfig 字段
             dataset_kwargs=dataset_kwargs,  # 新版 TRL 需注入 SFTConfig 字段
-            dataloader_num_workers=4,
-            dataloader_pin_memory=True,
-            group_by_length=True,
-            gradient_checkpointing=True,
         )
+        training_args.dataloader_num_workers = 4
+        training_args.dataloader_pin_memory = True
+        training_args.group_by_length = True
+        training_args.gradient_checkpointing = True
         trainer_extra_kwargs = {}
     else:
         print("SFT 参数配置：由于未找到 SFTConfig，回退至 TrainingArguments，参数将在 Trainer 中直接初始化。")
@@ -465,11 +465,11 @@ def train():
             seed=args.seed,
             remove_unused_columns=True,
             report_to="tensorboard" if os.path.exists("./logs") else "none",
-            dataloader_num_workers=4,
-            dataloader_pin_memory=True,
-            group_by_length=True,
-            gradient_checkpointing=True,
         )
+        training_args.dataloader_num_workers = 4
+        training_args.dataloader_pin_memory = True
+        training_args.group_by_length = True
+        training_args.gradient_checkpointing = True
         trainer_extra_kwargs = {
             "max_seq_length": args.max_seq_length,
             "dataset_kwargs": dataset_kwargs  # 老版 TRL 允许传给 SFTTrainer 构造函数
