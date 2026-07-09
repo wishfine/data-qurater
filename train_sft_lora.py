@@ -54,6 +54,9 @@ except ImportError:
             self.response_template = response_template
             # 提取响应模板在分词后的 Token IDs
             self.response_token_ids = tokenizer.encode(response_template, add_special_tokens=False)
+            # 备用：不包含换行的前缀
+            alt_template = response_template.rstrip()
+            self.alt_token_ids = tokenizer.encode(alt_template, add_special_tokens=False)
 
         def torch_call(self, examples):
             # 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
@@ -64,7 +67,7 @@ except ImportError:
             for i in range(len(examples)):
                 input_ids = batch["input_ids"][i].tolist()
                 
-                # 寻找匹配 response_token_ids 的子序列起点
+                # 1. 尝试匹配带换行的完整模板
                 idx = -1
                 n_template = len(self.response_token_ids)
                 for j in range(len(input_ids) - n_template + 1):
@@ -72,12 +75,21 @@ except ImportError:
                         idx = j + n_template
                         break
                 
+                # 2. 如果没找到，尝试匹配不带换行的模板
+                if idx == -1:
+                    n_alt = len(self.alt_token_ids)
+                    for j in range(len(input_ids) - n_alt + 1):
+                        if input_ids[j : j + n_alt] == self.alt_token_ids:
+                            idx = j + n_alt
+                            break
+                            
                 if idx != -1:
                     # 找到了模板，将模板之前的所有 Token（即 Prompt 部分）的 Label 设为 -100
                     labels[i, :idx] = -100
                 else:
-                    # 如果没找到模板，全设为 -100 以免学习损坏的数据
-                    labels[i, :] = -100
+                    # 兜底：如果完全没有匹配到模板，保留该样本原有的 labels，不进行 mask，避免全设为 -100 导致 loss=0 训练报错
+                    # 同时打印一个警告信息
+                    print(f"警告: 样本 {i} 中未检测到助理回复模板 '{self.response_template.strip()}'，跳过 Loss 屏蔽...")
                     
             batch["labels"] = labels
             return batch
