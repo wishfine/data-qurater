@@ -8,7 +8,7 @@ Qwen3.5/Qwen2.5-Instruct LoRA/QLoRA 训练脚本
   2. 兼容包含完整 difficulty_rating JSON 的标注数据集和仅有整数 difficulty 的原始数据集。
   3. 支持 ModelScope (魔搭社区) 自动下载，完美支持国内服务器部署。
   4. QLoRA (4-bit 压缩量化) 及 FP16/BF16 混合精度。
-  5. 兼容新老版本 TRL (解决新版本 TRL 移除 DataCollatorForCompletionOnlyLM 的问题，提供 Fallback 机制)。
+  5. 兼容新老版本 TRL (支持新版 SFTConfig 以及老版 TrainingArguments/max_seq_length 参数，解决 SFTTrainer 传参报错)。
 """
 
 import os
@@ -23,12 +23,21 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
     DataCollatorForLanguageModeling,
 )
 from trl import SFTTrainer
 
-# 尝试导入 DataCollatorForCompletionOnlyLM (新版本 TRL 0.20+ 已将其移除，改用 Fallback 自定义实现)
+# 1. 尝试导入 SFTConfig 并做 Fallback 兼容
+try:
+    from trl import SFTConfig
+    HAS_SFT_CONFIG = True
+    print("系统: 成功导入 SFTConfig。将使用新版 SFTConfig 进行参数配置。")
+except ImportError:
+    from transformers import TrainingArguments as SFTConfig
+    HAS_SFT_CONFIG = False
+    print("系统: 未找到 SFTConfig，降级使用 TrainingArguments 配合 SFTTrainer 进行配置。")
+
+# 2. 尝试导入 DataCollatorForCompletionOnlyLM (新版本 TRL 0.20+ 已将其移除，改用 Fallback 自定义实现)
 try:
     from trl import DataCollatorForCompletionOnlyLM
 except ImportError:
@@ -47,11 +56,11 @@ except ImportError:
             self.response_token_ids = tokenizer.encode(response_template, add_special_tokens=False)
 
         def torch_call(self, examples):
-            # 1. 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
+            # 调用父类方法获取默认的 batch (labels 默认复制自 input_ids)
             batch = super().torch_call(examples)
             labels = batch["labels"].clone()
             
-            # 2. 对 batch 中的每一个样本，定位 response_template 并进行 Masking
+            # 对 batch 中的每一个样本，定位 response_template 并进行 Masking
             for i in range(len(examples)):
                 input_ids = batch["input_ids"][i].tolist()
                 
@@ -67,7 +76,7 @@ except ImportError:
                     # 找到了模板，将模板之前的所有 Token（即 Prompt 部分）的 Label 设为 -100
                     labels[i, :idx] = -100
                 else:
-                    # 如果没找到模板，说明样本异常，全设为 -100 以免学习损坏的数据
+                    # 如果没找到模板，全设为 -100 以免学习损坏的数据
                     labels[i, :] = -100
                     
             batch["labels"] = labels
@@ -181,7 +190,7 @@ def process_jsonl_data(data_path: str, system_prompt: str) -> List[Dict[str, Any
 
 def train():
     parser = argparse.ArgumentParser(description="Qwen SFT LoRA/QLoRA Fine-tuning")
-    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3.5-4B-Instruct",
+    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3.5-4B",
                         help="Hugging Face / ModelScope 模型 ID，或本地路径")
     parser.add_argument("--model_cache_dir", type=str, default="/home/zhangyonglin/models",
                         help="模型缓存目录")
@@ -281,34 +290,62 @@ def train():
     )
     
     # 7. 配置仅对 Assistant 的回答进行计算的 Collator (Masked Loss)
-    # 对于 ChatML 格式的 Qwen，助理的回答部分前缀为 "<|im_start|>assistant\n"
+    # 对于 ChatML 格式 of Qwen，助理的回答部分前缀为 "<|im_start|>assistant\n"
     response_template = "<|im_start|>assistant\n"
     data_collator = DataCollatorForCompletionOnlyLM(
         response_template=response_template,
         tokenizer=tokenizer
     )
 
-    # 8. 训练超参数
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        learning_rate=args.learning_rate,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        logging_steps=args.logging_steps,
-        save_strategy=args.save_strategy,
-        save_steps=args.save_steps,
-        eval_strategy=args.eval_strategy,
-        eval_steps=args.eval_steps,
-        bf16=args.bf16,
-        fp16=args.fp16,
-        weight_decay=0.01,
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
-        seed=args.seed,
-        remove_unused_columns=False, # 防止 SFTTrainer 过滤掉 messages 字段
-        report_to="tensorboard" if os.path.exists("./logs") else "none"
-    )
+    # 8. 区分新老版本 TRL 来构建配置参数
+    # 如果是新版本（有 SFTConfig），max_seq_length 应该作为 SFTConfig 参数传入
+    if HAS_SFT_CONFIG:
+        print("SFT 参数配置：使用新版 SFTConfig，max_seq_length 已注入 Config 中。")
+        training_args = SFTConfig(
+            output_dir=args.output_dir,
+            learning_rate=args.learning_rate,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            logging_steps=args.logging_steps,
+            save_strategy=args.save_strategy,
+            save_steps=args.save_steps,
+            eval_strategy=args.eval_strategy,
+            eval_steps=args.eval_steps,
+            bf16=args.bf16,
+            fp16=args.fp16,
+            weight_decay=0.01,
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.03,
+            seed=args.seed,
+            remove_unused_columns=False, # 防止 SFTTrainer 过滤掉 messages 字段
+            report_to="tensorboard" if os.path.exists("./logs") else "none",
+            max_seq_length=args.max_seq_length, # 注入 SFTConfig 字段
+        )
+        trainer_extra_kwargs = {}
+    else:
+        print("SFT 参数配置：由于未找到 SFTConfig，回退至 TrainingArguments，max_seq_length 将在 Trainer 中直接初始化。")
+        training_args = SFTConfig(
+            output_dir=args.output_dir,
+            learning_rate=args.learning_rate,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            logging_steps=args.logging_steps,
+            save_strategy=args.save_strategy,
+            save_steps=args.save_steps,
+            eval_strategy=args.eval_strategy,
+            eval_steps=args.eval_steps,
+            bf16=args.bf16,
+            fp16=args.fp16,
+            weight_decay=0.01,
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.03,
+            seed=args.seed,
+            remove_unused_columns=False,
+            report_to="tensorboard" if os.path.exists("./logs") else "none"
+        )
+        trainer_extra_kwargs = {"max_seq_length": args.max_seq_length}
 
     # 9. 使用 TRL SFTTrainer 启动训练
     print("开始初始化 SFTTrainer...")
@@ -317,13 +354,13 @@ def train():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=lora_config,
-        max_seq_length=args.max_seq_length,
         data_collator=data_collator,
         tokenizer=tokenizer,
         args=training_args,
         formatting_func=lambda example: [
             tokenizer.apply_chat_template(msg, tokenize=False) for msg in example["messages"]
-        ]
+        ],
+        **trainer_extra_kwargs
     )
 
     print("开始训练...")
