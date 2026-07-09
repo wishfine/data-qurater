@@ -347,6 +347,14 @@ def train():
         )
         trainer_extra_kwargs = {"max_seq_length": args.max_seq_length}
 
+    # 动态检测 SFTTrainer 的构造参数，自适应使用 tokenizer 或 processing_class
+    import inspect
+    sig = inspect.signature(SFTTrainer.__init__)
+    if "processing_class" in sig.parameters:
+        trainer_extra_kwargs["processing_class"] = tokenizer
+    else:
+        trainer_extra_kwargs["tokenizer"] = tokenizer
+
     # 9. 使用 TRL SFTTrainer 启动训练
     print("开始初始化 SFTTrainer...")
     trainer = SFTTrainer(
@@ -355,7 +363,6 @@ def train():
         eval_dataset=val_dataset,
         peft_config=lora_config,
         data_collator=data_collator,
-        tokenizer=tokenizer,
         args=training_args,
         formatting_func=lambda example: [
             tokenizer.apply_chat_template(msg, tokenize=False) for msg in example["messages"]
