@@ -317,7 +317,6 @@ def train():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         peft_config=lora_config,
-        dataset_text_field="text", # 占位符，因为有 formatting_func
         max_seq_length=args.max_seq_length,
         data_collator=data_collator,
         tokenizer=tokenizer,
