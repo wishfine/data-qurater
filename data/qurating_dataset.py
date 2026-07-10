@@ -35,7 +35,54 @@ class NormalizedPairwiseDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.tokenizer.padding_side = "right"  # Force padding side to right
-        self.examples = self._load_data(data_path, max_samples)
+        self.data_path = data_path
+        self.file_handle = None
+        
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+            
+        # Detect format of first valid line
+        self.is_flat_format = False
+        with open(data_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        item = json.loads(line)
+                        if "probs" in item and "target" not in item:
+                            self.is_flat_format = True
+                    except Exception:
+                        pass
+                    break
+                    
+        if self.is_flat_format:
+            print(f"[INFO] File {data_path} is in legacy flat format. Loading in-memory...")
+            self.use_lazy_loading = False
+            self.examples = self._load_data(data_path, max_samples)
+        else:
+            print(f"[INFO] Indexing normalized dataset {data_path} (Lazy Loading active) ...")
+            self.use_lazy_loading = True
+            self.offsets = []
+            with open(data_path, "rb") as f:
+                offset = 0
+                for line in f:
+                    # Strip to verify if it's not empty
+                    stripped = line.strip()
+                    if stripped:
+                        self.offsets.append(offset)
+                    offset += len(line)
+                    
+            if max_samples is not None:
+                self.offsets = self.offsets[:max_samples]
+                
+            print(f"\n--- Loaded Normalized Dataset (Indexed): {data_path} (Total samples: {len(self.offsets)}) ---")
+            for idx in range(min(3, len(self.offsets))):
+                ex = self[idx]
+                print(f"Sample {idx+1}:")
+                print(f"  [Text A]: {ex['text_a'][:80]}...")
+                print(f"  [Text B]: {ex['text_b'][:80]}...")
+                print(f"  [Target] : {ex['target']:.4f} | Dim ID: {ex['dimension_id']} ({DIMENSION_NAMES[ex['dimension_id']]}) | Confidence: {ex['confidence']:.4f}")
+            print("---------------------------------------------------\n")
         
     def _load_data(self, data_path: str, max_samples: int | None) -> List[Dict[str, Any]]:
         examples = []
@@ -88,9 +135,17 @@ class NormalizedPairwiseDataset(Dataset):
         return examples
         
     def __len__(self) -> int:
+        if self.use_lazy_loading:
+            return len(self.offsets)
         return len(self.examples)
         
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        if self.use_lazy_loading:
+            if self.file_handle is None:
+                self.file_handle = open(self.data_path, "r", encoding="utf-8")
+            self.file_handle.seek(self.offsets[idx])
+            line = self.file_handle.readline()
+            return json.loads(line)
         return self.examples[idx]
         
     def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
