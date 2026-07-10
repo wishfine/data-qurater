@@ -6,11 +6,20 @@ set -u
 
 OUTPUT_FILE="reports/server/server_verification_summary.txt"
 
-echo "=== SERVER VERIFICATION SUMMARY REPORT ===" > "$OUTPUT_FILE"
+echo "=== SERVER VERIFICATION SUMMARY REPORT (QWEN3-0.6B) ===" > "$OUTPUT_FILE"
 echo "Timestamp: $(date)" >> "$OUTPUT_FILE"
-echo "==========================================" >> "$OUTPUT_FILE"
+echo "=======================================================" >> "$OUTPUT_FILE"
 
-# 1. Environment Check Report
+# 1. Model Download Check
+if [ -f "reports/server/model_download_output.txt" ]; then
+    echo "[MODEL DOWNLOAD] Log found." >> "$OUTPUT_FILE"
+    grep -E "MODEL_ID|MODEL_PATH|Saved actual model path" reports/server/model_download_output.txt >> "$OUTPUT_FILE" || true
+else
+    echo "[MODEL DOWNLOAD] Log NOT found!" >> "$OUTPUT_FILE"
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# 2. Environment Check Report
 if [ -f "reports/server/environment_output.txt" ]; then
     echo "[ENV CHECK] Log found." >> "$OUTPUT_FILE"
     grep -E "Python Path|Conda Environment|PyTorch Version|torch.cuda.is_available\(\)|GPU" reports/server/environment_output.txt >> "$OUTPUT_FILE" || true
@@ -19,7 +28,7 @@ else
 fi
 echo "" >> "$OUTPUT_FILE"
 
-# 2. Unit Test Report
+# 3. Unit Test Report
 if [ -f "reports/server/unit_test_output.txt" ]; then
     echo "[UNIT TESTS] Log found." >> "$OUTPUT_FILE"
     tail -n 10 reports/server/unit_test_output.txt >> "$OUTPUT_FILE" || true
@@ -28,7 +37,7 @@ else
 fi
 echo "" >> "$OUTPUT_FILE"
 
-# 3. Data Direction Check Report
+# 4. Data Direction Check Report
 if [ -f "reports/server/data_direction_output.txt" ]; then
     echo "[DATA DIRECTION] Log found." >> "$OUTPUT_FILE"
     grep -E "VERIFICATION|Record #1:" -A 5 reports/server/data_direction_output.txt >> "$OUTPUT_FILE" || true
@@ -37,23 +46,41 @@ else
 fi
 echo "" >> "$OUTPUT_FILE"
 
-# 4. Smoke Test Report
+# 5. Overlap Check Report
+if [ -f "reports/server/train_eval_overlap_report.json" ]; then
+    echo "[DATA OVERLAP CHECK] Report found." >> "$OUTPUT_FILE"
+    cat reports/server/train_eval_overlap_report.json >> "$OUTPUT_FILE"
+else
+    echo "[DATA OVERLAP CHECK] Report NOT found!" >> "$OUTPUT_FILE"
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# 6. Baseline Evaluation Check
+if [ -f "reports/server/baseline_eval_output.txt" ]; then
+    echo "[BASELINE EVAL] Log found." >> "$OUTPUT_FILE"
+    grep -E "Macro Accuracy|Accuracy          |Balanced Accuracy|BCE Loss|AUC" reports/server/baseline_eval_output.txt | head -n 15 >> "$OUTPUT_FILE" || true
+else
+    echo "[BASELINE EVAL] Log NOT found!" >> "$OUTPUT_FILE"
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# 7. Smoke Test Report
 if [ -f "reports/server/smoke_output.txt" ]; then
     echo "[SMOKE TEST] Log found." >> "$OUTPUT_FILE"
-    grep -E "BENCHMARK STEP|Step Latency|Throughput|GPU Max Memory" reports/server/smoke_output.txt | tail -n 15 >> "$OUTPUT_FILE" || true
+    grep -E "OPTIMIZER PARAMETER GROUPS|BENCHMARK STEP|Step Latency|Throughput|GPU Max Memory|GRAD VERIFY" reports/server/smoke_output.txt | tail -n 25 >> "$OUTPUT_FILE" || true
 else
     echo "[SMOKE TEST] Log NOT found!" >> "$OUTPUT_FILE"
 fi
 echo "" >> "$OUTPUT_FILE"
 
-# 5. Checkpoint Load Report
-if [ -f "reports/server/checkpoint_output.txt" ]; then
-    echo "[CHECKPOINT LOAD] Log found." >> "$OUTPUT_FILE"
-    tail -n 15 reports/server/checkpoint_output.txt >> "$OUTPUT_FILE" || true
+# 8. Checkpoint Comparison Report
+if [ -f "reports/server/training_comparison.md" ]; then
+    echo "[TRAINING COMPARISON] Table found." >> "$OUTPUT_FILE"
+    cat reports/server/training_comparison.md >> "$OUTPUT_FILE"
 else
-    echo "[CHECKPOINT LOAD] Log NOT found!" >> "$OUTPUT_FILE"
+    echo "[TRAINING COMPARISON] Table NOT found!" >> "$OUTPUT_FILE"
 fi
-echo "==========================================" >> "$OUTPUT_FILE"
+echo "=======================================================" >> "$OUTPUT_FILE"
 
 echo "Summary report successfully generated at: $OUTPUT_FILE"
 cat "$OUTPUT_FILE"

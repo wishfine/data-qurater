@@ -1,0 +1,17 @@
+{
+  "model_id": "Qwen/Qwen3-0.6B",
+  "model_path_file": "outputs/model_path.txt",
+  "experiment_name": "qwen3_06b_full_train",
+  "seed": 42,
+  "max_length": 512,
+  "use_4bit": false,
+  "use_lora": true,
+  "bf16": true,
+  "gradient_checkpointing": false,
+  "confidence_threshold": 0.5,
+  "evaluate_before_training": true,
+  "per_device_train_batch_size": 4,
+  "gradient_accumulation_steps": 4,
+  "learning_rate": 2e-5,
+  "num_train_epochs": 3
+}

@@ -14,7 +14,6 @@ from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
 from data.qurating_dataset import NormalizedPairwiseDataset
 
 def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
-    """Compute Area Under ROC Curve using rank sums (Wilcoxon-Mann-Whitney formula)"""
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
     
@@ -34,15 +33,54 @@ def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
     auc = (pos_ranks_sum - (pos_count * (pos_count + 1)) / 2) / (pos_count * neg_count)
     return float(auc)
 
+def compute_balanced_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    pos_mask = (y_true == 1)
+    neg_mask = (y_true == 0)
+    
+    tp_rate = np.mean(y_pred[pos_mask] == 1) if np.sum(pos_mask) > 0 else 0.0
+    tn_rate = np.mean(y_pred[neg_mask] == 0) if np.sum(neg_mask) > 0 else 0.0
+    
+    return float(0.5 * (tp_rate + tn_rate))
+
+def compute_confidence_buckets(targets: np.ndarray, preds: np.ndarray) -> Dict[str, float | str]:
+    confidences = 2.0 * np.abs(targets - 0.5)
+    
+    low_mask = (confidences < 0.3)
+    med_mask = (confidences >= 0.3) & (confidences < 0.7)
+    high_mask = (confidences >= 0.7)
+    
+    def get_acc(mask):
+        if np.sum(mask) == 0:
+            return "N/A"
+        pred_label = (preds[mask] > 0.5).astype(int)
+        gt_label = (targets[mask] > 0.5).astype(int)
+        return float(np.mean(pred_label == gt_label))
+        
+    return {
+        "low": get_acc(low_mask),
+        "medium": get_acc(med_mask),
+        "high": get_acc(high_mask)
+    }
+
+def get_distribution_stats(arr: np.ndarray) -> Dict[str, float]:
+    if len(arr) == 0:
+        return {}
+    return {
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "median": float(np.median(arr))
+    }
+
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Evaluate QwenQuRater quality predictor")
     parser.add_argument("--model_path", type=str, required=True, help="Path to base model directory")
     parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to modular checkpoint directory")
     parser.add_argument("--eval_file", type=str, required=True, help="Path to evaluation dataset")
-    parser.add_argument("--max_length", type=int, default=512, help="Max sequence length")
+    parser.add_argument("--max_length", type=int, default=256, help="Max sequence length")
     parser.add_argument("--batch_size", type=int, default=4, help="Evaluation batch size")
     parser.add_argument("--output_file", type=str, default=None, help="Save evaluation metrics summary to this json file")
-    parser.add_argument("--pooling_type", type=str, default="last_token", help="Pooling strategy")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -68,7 +106,7 @@ def run_evaluation():
     
     model = QwenQuRater(backbone=backbone)
     
-    # Load LoRA adapter if present under adapter/
+    # Load LoRA adapter if present
     adapter_dir = os.path.join(args.checkpoint_dir, "adapter")
     config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
     if os.path.exists(config_path):
@@ -79,7 +117,7 @@ def run_evaluation():
             print(f"Loading LoRA adapter from: {adapter_dir} ...")
             model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
             
-    # Load scalar heads (rating_head.safetensors)
+    # Load scalar rating head
     heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
     if os.path.exists(heads_path):
         from safetensors.torch import load_file
@@ -100,8 +138,7 @@ def run_evaluation():
     all_targets = {dim_idx: [] for dim_idx in range(4)}
     all_preds = {dim_idx: [] for dim_idx in range(4)}
     all_diffs = {dim_idx: [] for dim_idx in range(4)}
-    swap_errors = {dim_idx: [] for dim_idx in range(4)}
-    
+    all_confidences = {dim_idx: [] for dim_idx in range(4)}
     domain_data = []
 
     print("Evaluating samples...")
@@ -120,14 +157,8 @@ def run_evaluation():
             ratings_a = model(input_ids_a, attention_mask_a)
             ratings_b = model(input_ids_b, attention_mask_b)
             
-            # Predict swapped (B, A)
-            ratings_a_swap = model(input_ids_b, attention_mask_b)
-            ratings_b_swap = model(input_ids_a, attention_mask_a)
-            
             for i in range(input_ids_a.size(0)):
                 dim_idx = int(dimension_ids[i].item())
-                
-                # Extract score for specific dimension
                 r_a = ratings_a[i, dim_idx].cpu().float().item()
                 r_b = ratings_b[i, dim_idx].cpu().float().item()
                 gt = targets[i].cpu().float().item()
@@ -135,18 +166,10 @@ def run_evaluation():
                 logit = r_b - r_a
                 p_pred = 1.0 / (1.0 + np.exp(-logit))
                 
-                # Swap consistency
-                r_a_swap = ratings_a_swap[i, dim_idx].cpu().float().item()
-                r_b_swap = ratings_b_swap[i, dim_idx].cpu().float().item()
-                logit_swap = r_b_swap - r_a_swap
-                p_pred_swap = 1.0 / (1.0 + np.exp(-logit_swap))
-                
-                swap_err = np.abs(p_pred + p_pred_swap - 1.0)
-                
                 all_targets[dim_idx].append(gt)
                 all_preds[dim_idx].append(p_pred)
                 all_diffs[dim_idx].append(logit)
-                swap_errors[dim_idx].append(swap_err)
+                all_confidences[dim_idx].append(confidences[i].cpu().float().item())
                 domain_data.append(domains[i])
 
     # 4. Compiling statistics
@@ -161,7 +184,6 @@ def run_evaluation():
         targets = np.array(all_targets[dim_idx])
         preds = np.array(all_preds[dim_idx])
         diffs = np.array(all_diffs[dim_idx])
-        swap_errs = np.array(swap_errors[dim_idx])
         
         if len(targets) == 0:
             continue
@@ -170,39 +192,54 @@ def run_evaluation():
         
         pred_label = (preds > 0.5).astype(int)
         gt_label = (targets > 0.5).astype(int)
+        
         accuracy = float(np.mean(pred_label == gt_label))
         macro_acc.append(accuracy)
         
+        balanced_acc = compute_balanced_accuracy(gt_label, pred_label)
         auc_score = compute_auc(targets, preds)
-        confidence = float(np.mean(np.abs(preds - 0.5)) * 2)
-        mean_diff = float(np.mean(diffs))
-        std_diff = float(np.std(diffs))
-        mean_swap_err = float(np.mean(swap_errs))
+        
+        # Calculate distributions
+        diff_stats = get_distribution_stats(diffs)
+        prob_stats = get_distribution_stats(preds)
+        buckets = compute_confidence_buckets(targets, preds)
         
         print(f"Dimension: {dim_name}")
-        print(f"  Accuracy: {accuracy:.4f}")
-        print(f"  BCE Loss: {bce_loss:.4f}")
-        print(f"  AUC Score: {auc_score:.4f}")
-        print(f"  Prediction Confidence: {confidence:.4f}")
-        print(f"  Score Diff (B - A): mean={mean_diff:.4f}, std={std_diff:.4f}")
-        print(f"  Swap Consistency Error: {mean_swap_err:.4e}")
+        print(f"  Accuracy          : {accuracy:.4f}")
+        print(f"  Balanced Accuracy : {balanced_acc:.4f}")
+        print(f"  BCE Loss          : {bce_loss:.4f}")
+        print(f"  AUC Score         : {auc_score:.4f}")
+        print(f"  Confidence Buckets Acc:")
+        print(f"    - Low (<0.3)    : {buckets['low']}")
+        print(f"    - Medium        : {buckets['medium']}")
+        print(f"    - High (>=0.7)  : {buckets['high']}")
+        print(f"  Score Diff (B-A)  : mean={diff_stats.get('mean', 0.0):.4f}, std={diff_stats.get('std', 0.0):.4f}")
+        print(f"  Prediction Prob   : mean={prob_stats.get('mean', 0.0):.4f}, std={prob_stats.get('std', 0.0):.4f}")
         print("-" * 50)
         
         metrics_summary[dim_name] = {
             "accuracy": accuracy,
+            "balanced_accuracy": balanced_acc,
             "bce_loss": bce_loss,
             "auc": auc_score,
-            "confidence": confidence,
-            "score_diff_mean": mean_diff,
-            "score_diff_std": std_diff,
-            "swap_consistency_error": mean_swap_err
+            "confidence_buckets": buckets,
+            "score_diff_distribution": diff_stats,
+            "prediction_probability_distribution": prob_stats
         }
 
     mean_macro_acc = float(np.mean(macro_acc)) if macro_acc else 0.0
     print(f"Macro Accuracy across Dimensions: {mean_macro_acc:.4f}")
     metrics_summary["macro_accuracy"] = mean_macro_acc
+
+    # Leakage/Imbalance warnings
+    if mean_macro_acc > 0.85:
+        print("\n" + "!" * 80)
+        print("WARNING: Possible data leakage, label imbalance, duplicated pairs,")
+        print("         incorrect label direction, or evaluation bug.")
+        print("!" * 80 + "\n")
         
     if args.output_file:
+        os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
         with open(args.output_file, "w", encoding="utf-8") as f:
             json.dump(metrics_summary, f, indent=2)
         print(f"\nSaved metrics summary to: {args.output_file}")

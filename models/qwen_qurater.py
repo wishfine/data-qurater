@@ -1,7 +1,7 @@
 from __future__ import annotations
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Union
+from typing import Dict, Optional
 
 DIMENSION_NAMES = [
     "writing_style",
@@ -18,6 +18,7 @@ class QwenQuRater(nn.Module):
     - Scheme A: nn.Linear(hidden_size, 4, bias=False)
     - Default pooling selects the hidden state of the last non-padding token.
     - Dimension selection via .gather() on the dimension_id tensor.
+    - Explicit validation check: raises ValueError if attention_mask is all 0.
     """
     def __init__(
         self, 
@@ -34,7 +35,6 @@ class QwenQuRater(nn.Module):
         if self.pad_token_id is None:
             self.pad_token_id = self.backbone.config.eos_token_id
             
-        # Joint rating head predicting 4 quality scores simultaneously
         self.score = nn.Linear(hidden_size, 4, bias=False)
 
     def forward(
@@ -49,6 +49,10 @@ class QwenQuRater(nn.Module):
         - If dimension_id is None: scores of shape (batch_size, 4)
         - If dimension_id is provided: selected scores of shape (batch_size,)
         """
+        # Ensure attention_mask is not all 0s for any item in the batch
+        if attention_mask is not None and torch.eq(attention_mask, 0).all(dim=-1).any():
+            raise ValueError("[CRITICAL ERROR] Attention mask is all zeros for one or more samples in the batch.")
+
         outputs = self.backbone(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -71,8 +75,6 @@ class QwenQuRater(nn.Module):
         all_scores = self.score(pooled)  # Shape: (batch_size, 4)
 
         if dimension_id is not None:
-            # dimension_id is a tensor of shape (batch_size,) with dimension index values [0, 1, 2, 3]
-            # Gather scores at the corresponding dimension index
             selected_scores = all_scores.gather(
                 dim=1,
                 index=dimension_id.unsqueeze(1).long()

@@ -29,7 +29,6 @@ class MockBackbone(nn.Module):
         
     def forward(self, input_ids, attention_mask, output_hidden_states=True):
         batch_size, seq_len = input_ids.shape
-        # Deterministic generation based on input_ids to make round-trip checks exact
         x = input_ids.float().unsqueeze(-1).repeat(1, 1, self.config.hidden_size)
         last_hidden = self.linear(x)
         return MockBackboneOutput(last_hidden)
@@ -48,7 +47,6 @@ class TestQwenQuRater(unittest.TestCase):
         backbone = MockBackbone(hidden_size=8)
         model = QwenQuRater(backbone=backbone)
         
-        # 0 is pad_token_id. Token at last index (4) is 99.
         input_ids = torch.tensor([[0, 0, 10, 20, 99]], dtype=torch.long)
         attention_mask = torch.tensor([[0, 0, 1, 1, 1]], dtype=torch.long)
         
@@ -59,7 +57,6 @@ class TestQwenQuRater(unittest.TestCase):
         ratings = model(input_ids, attention_mask)
         score_manual = model.score(expected)
         
-        # Check matching
         for d in range(4):
             self.assertAlmostEqual(ratings[0, d].item(), score_manual[d].item(), places=5)
 
@@ -68,7 +65,6 @@ class TestQwenQuRater(unittest.TestCase):
         backbone = MockBackbone(hidden_size=8)
         model = QwenQuRater(backbone=backbone)
         
-        # Token at index 2 (value 99) is the last non-pad token
         input_ids = torch.tensor([[10, 20, 99, 0, 0]], dtype=torch.long)
         attention_mask = torch.tensor([[1, 1, 1, 0, 0]], dtype=torch.long)
         
@@ -103,11 +99,9 @@ class TestQwenQuRater(unittest.TestCase):
     def test_pooling_eos_token(self):
         """Test last non-pad token pooling with trailing EOS token"""
         backbone = MockBackbone(hidden_size=8)
-        # Set EOS as 1
         backbone.config.eos_token_id = 1
         model = QwenQuRater(backbone=backbone)
         
-        # EOS token (1) at index 3 is not pad (0)
         input_ids = torch.tensor([[10, 20, 99, 1, 0]], dtype=torch.long)
         attention_mask = torch.tensor([[1, 1, 1, 1, 0]], dtype=torch.long)
         
@@ -144,7 +138,6 @@ class TestQwenQuRater(unittest.TestCase):
         backbone = MockBackbone(hidden_size=8)
         model = QwenQuRater(backbone=backbone)
         
-        # Row 1 last token at 4, Row 2 last token at 2
         input_ids = torch.tensor([[10, 20, 30, 40, 99], [10, 20, 99, 0, 0]], dtype=torch.long)
         attention_mask = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]], dtype=torch.long)
         
@@ -163,6 +156,28 @@ class TestQwenQuRater(unittest.TestCase):
             self.assertAlmostEqual(ratings[0, d].item(), score_manual_0[d].item(), places=5)
             self.assertAlmostEqual(ratings[1, d].item(), score_manual_1[d].item(), places=5)
 
+    def test_attention_mask_all_ones(self):
+        """Test pooling works when attention_mask is all ones"""
+        backbone = MockBackbone(hidden_size=8)
+        model = QwenQuRater(backbone=backbone)
+        
+        input_ids = torch.tensor([[10, 20, 30, 40]], dtype=torch.long)
+        attention_mask = torch.tensor([[1, 1, 1, 1]], dtype=torch.long)
+        
+        ratings = model(input_ids, attention_mask)
+        self.assertEqual(ratings.shape, (1, 4))
+
+    def test_attention_mask_all_zeros_raises_error(self):
+        """Test that passing an all-zeros attention mask raises ValueError"""
+        backbone = MockBackbone(hidden_size=8)
+        model = QwenQuRater(backbone=backbone)
+        
+        input_ids = torch.tensor([[10, 20, 30, 0]], dtype=torch.long)
+        attention_mask = torch.tensor([[0, 0, 0, 0]], dtype=torch.long)
+        
+        with self.assertRaises(ValueError):
+            model(input_ids, attention_mask)
+
     def test_forward_with_dimension_id_gather(self):
         """Test that passing dimension_id gathers the correct dimension scores"""
         backbone = MockBackbone(hidden_size=8)
@@ -170,8 +185,6 @@ class TestQwenQuRater(unittest.TestCase):
         
         input_ids = torch.tensor([[10, 20, 99], [10, 20, 99]], dtype=torch.long)
         attention_mask = torch.tensor([[1, 1, 1], [1, 1, 1]], dtype=torch.long)
-        
-        # Gather dimension 0 for first element, dimension 2 for second element
         dimension_ids = torch.tensor([0, 2], dtype=torch.long)
         
         ratings_all = model(input_ids, attention_mask)
@@ -183,16 +196,13 @@ class TestQwenQuRater(unittest.TestCase):
 
     def test_loss_direction_correctness(self):
         """Verify B > A target results in smaller loss when rating_b > rating_a"""
-        # Targets: B is preferred to A (y = 1.0)
         targets = torch.tensor([1.0])
         confidences = torch.tensor([1.0])
         
-        # Test Case 1: ratings_b > ratings_a (Correct direction)
         ratings_a_1 = torch.tensor([1.5])
         ratings_b_1 = torch.tensor([3.5])
         loss_correct = bradley_terry_loss(ratings_a_1, ratings_b_1, targets, confidences, 0.0)
         
-        # Test Case 2: ratings_a > ratings_b (Wrong direction)
         ratings_a_2 = torch.tensor([3.5])
         ratings_b_2 = torch.tensor([1.5])
         loss_incorrect = bradley_terry_loss(ratings_a_2, ratings_b_2, targets, confidences, 0.0)
@@ -206,11 +216,9 @@ class TestQwenQuRater(unittest.TestCase):
         targets = torch.tensor([1.0, 0.0])
         confidences = torch.tensor([0.1, 0.2])
         
-        # Threshold filters out everything (confidence_threshold = 0.5)
         loss = bradley_terry_loss(ratings_a, ratings_b, targets, confidences, 0.5)
         self.assertEqual(loss.item(), 0.0)
         
-        # Backward should execute successfully
         loss.backward()
         self.assertIsNotNone(ratings_a.grad)
 
@@ -227,12 +235,14 @@ class TestQwenQuRater(unittest.TestCase):
                 self.model_path = "mock"
                 self.use_lora = False
                 self.use_4bit = False
+                self.bf16 = True
+                self.seed = 42
+                self.max_length = 256
                 
         args = DummyArgs()
         
         save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch=1)
         
-        # Assert directory elements exist
         self.assertTrue(os.path.exists(os.path.join(checkpoint_dir, "adapter")))
         self.assertTrue(
             os.path.exists(os.path.join(checkpoint_dir, "rating_head.safetensors")) or
