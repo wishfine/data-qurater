@@ -29,6 +29,24 @@ def save_baseline(model_path, val_file):
         trust_remote_code=True
     )
     
+    # Wrap with PEFT LoRA configuration to match trainable model layout
+    from peft import LoraConfig, get_peft_model
+    target_modules = []
+    for name, module in backbone.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            target_modules.append(name.split(".")[-1])
+    target_modules = list(set(target_modules))
+    
+    peft_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=target_modules,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="FEATURE_EXTRACTION"
+    )
+    backbone = get_peft_model(backbone, peft_config)
+    
     model = QwenQuRater(backbone=backbone)
     model.to(device)
     
@@ -54,14 +72,7 @@ def save_baseline(model_path, val_file):
     save_experiment_metadata(args, val_dataset)
     
     # Save checkpoint-0
-    checkpoint_0_dir = "outputs/qwen3_06b_experiment/checkpoint-0"
-    
-    # Find model linear layers for targets list
-    target_modules = []
-    for name, module in model.backbone.named_modules():
-        if isinstance(module, torch.nn.Linear):
-            target_modules.append(name.split(".")[-1])
-    target_modules = list(set(target_modules))
+    checkpoint_0_dir = "outputs/qwen35_4b_experiment/checkpoint-0"
     
     save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
     print("Baseline saved successfully.")
