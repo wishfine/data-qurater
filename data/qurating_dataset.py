@@ -60,18 +60,33 @@ class NormalizedPairwiseDataset(Dataset):
             self.use_lazy_loading = False
             self.examples = self._load_data(data_path, max_samples)
         else:
-            print(f"[INFO] Indexing normalized dataset {data_path} (Lazy Loading active) ...")
+            print(f"[INFO] High-performance indexing dataset {data_path} (Lazy Loading)...")
             self.use_lazy_loading = True
-            self.offsets = []
+            
+            # Read in 1MB chunks to minimize NFS latency and bypass garbage collector overhead
+            self.offsets = [0]
             with open(data_path, "rb") as f:
+                chunk_size = 1024 * 1024  # 1MB buffer
                 offset = 0
-                for line in f:
-                    # Strip to verify if it's not empty
-                    stripped = line.strip()
-                    if stripped:
-                        self.offsets.append(offset)
-                    offset += len(line)
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
                     
+                    start = 0
+                    while True:
+                        pos = chunk.find(b"\n", start)
+                        if pos == -1:
+                            break
+                        self.offsets.append(offset + pos + 1)
+                        start = pos + 1
+                    
+                    offset += len(chunk)
+            
+            # Remove trailing EOF offset if present
+            if self.offsets and self.offsets[-1] >= offset:
+                self.offsets.pop()
+                
             if max_samples is not None:
                 self.offsets = self.offsets[:max_samples]
                 
@@ -83,6 +98,11 @@ class NormalizedPairwiseDataset(Dataset):
                 print(f"  [Text B]: {ex['text_b'][:80]}...")
                 print(f"  [Target] : {ex['target']:.4f} | Dim ID: {ex['dimension_id']} ({DIMENSION_NAMES[ex['dimension_id']]}) | Confidence: {ex['confidence']:.4f}")
             print("---------------------------------------------------\n")
+            
+            # Close file handle in parent process to avoid sharing descriptor across forks in DataLoader workers
+            if self.file_handle is not None:
+                self.file_handle.close()
+                self.file_handle = None
         
     def _load_data(self, data_path: str, max_samples: int | None) -> List[Dict[str, Any]]:
         examples = []
