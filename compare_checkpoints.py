@@ -11,6 +11,14 @@ def load_metrics(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def safe_format(val):
+    if val is None:
+        return "N/A"
+    try:
+        return f"{val:.4f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
 def main():
     parser = argparse.ArgumentParser(description="Compare checkpoints and plot learning progress")
     parser.add_argument("--eval_dir", type=str, default="outputs/qwen35_4b_experiment/evaluations")
@@ -42,26 +50,26 @@ def main():
         f.write("| --- | --- | --- |\n")
         
         # 1. Macro Accuracy
-        acc_base = f"{baseline['macro_accuracy']:.4f}" if baseline else "N/A"
-        acc_smoke = f"{smoke['macro_accuracy']:.4f}" if smoke else "N/A"
+        acc_base = safe_format(baseline.get('macro_accuracy')) if baseline else "N/A"
+        acc_smoke = safe_format(smoke.get('macro_accuracy')) if smoke else "N/A"
         f.write(f"| **Macro Accuracy** | {acc_base} | {acc_smoke} |\n")
         
         # 2. Individual Dimensions Accuracies
         for dim in DIMENSIONS:
-            base_val = f"{baseline[dim]['accuracy']:.4f}" if baseline and dim in baseline else "N/A"
-            smoke_val = f"{smoke[dim]['accuracy']:.4f}" if smoke and dim in smoke else "N/A"
+            base_val = safe_format(baseline[dim].get('accuracy')) if baseline and dim in baseline else "N/A"
+            smoke_val = safe_format(smoke[dim].get('accuracy')) if smoke and dim in smoke else "N/A"
             f.write(f"| {dim} Accuracy | {base_val} | {smoke_val} |\n")
             
         # 3. BCE Loss
         for dim in DIMENSIONS:
-            base_val = f"{baseline[dim]['bce_loss']:.4f}" if baseline and dim in baseline else "N/A"
-            smoke_val = f"{smoke[dim]['bce_loss']:.4f}" if smoke and dim in smoke else "N/A"
+            base_val = safe_format(baseline[dim].get('bce_loss')) if baseline and dim in baseline else "N/A"
+            smoke_val = safe_format(smoke[dim].get('bce_loss')) if smoke and dim in smoke else "N/A"
             f.write(f"| {dim} BCE Loss | {base_val} | {smoke_val} |\n")
 
         # 4. AUC
         for dim in DIMENSIONS:
-            base_val = f"{baseline[dim]['auc']:.4f}" if baseline and dim in baseline else "N/A"
-            smoke_val = f"{smoke[dim]['auc']:.4f}" if smoke and dim in smoke else "N/A"
+            base_val = safe_format(baseline[dim].get('auc')) if baseline and dim in baseline else "N/A"
+            smoke_val = safe_format(smoke[dim].get('auc')) if smoke and dim in smoke else "N/A"
             f.write(f"| {dim} AUC | {base_val} | {smoke_val} |\n")
             
     # Save learning_curve.csv
