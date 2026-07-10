@@ -28,12 +28,14 @@ class QwenQuRater(nn.Module):
         super().__init__()
         self.backbone = backbone
         
-        if hidden_size is None:
-            hidden_size = self.backbone.config.hidden_size
+        config = self.backbone.config
+        if hasattr(config, "text_config"):
+            config = config.text_config
             
-        self.pad_token_id = self.backbone.config.pad_token_id
-        if self.pad_token_id is None:
-            self.pad_token_id = self.backbone.config.eos_token_id
+        if hidden_size is None:
+            hidden_size = getattr(config, "hidden_size", getattr(config, "hidden_dim", 2560))
+            
+        self.pad_token_id = getattr(config, "pad_token_id", getattr(config, "eos_token_id", None))
             
         self.score = nn.Linear(hidden_size, 4, bias=False)
 
