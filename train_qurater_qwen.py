@@ -264,12 +264,18 @@ def main():
                 head_params.append((name, param))
                 
     if is_main_process:
+        config = model.backbone.config
+        if hasattr(config, "text_config"):
+            config = config.text_config
+        hidden_size = getattr(config, "hidden_size", getattr(config, "hidden_dim", "Unknown"))
+        num_layers = getattr(config, "num_hidden_layers", "Unknown")
+        
         print("\n" + "=" * 50)
         print("OPTIMIZER PARAMETER GROUPS VERIFICATION")
         print("=" * 50)
         print(f"Model ID                  : Qwen/Qwen3.5-4B")
-        print(f"Model Hidden Size         : {model.backbone.config.hidden_size}")
-        print(f"Backbone Layer Count      : {getattr(model.backbone.config, 'num_hidden_layers', 'Unknown')}")
+        print(f"Model Hidden Size         : {hidden_size}")
+        print(f"Backbone Layer Count      : {num_layers}")
         if args.use_lora:
             print(f"LoRA Target Modules       : {target_modules}")
         print(f"Total Trainable LoRA Params: {lora_trainable_params}")
