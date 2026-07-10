@@ -78,13 +78,13 @@ checkpoint-final/
 
 ## 5. Multi-Stage Execution Workflow on Target Server
 
-Once pushed to GitHub, pull the changes on the target server, activate the `agent-rl` Conda environment, and run the following verification stages sequentially.
+Once pushed to GitHub, pull the changes on the target server, activate the `QuRater` Conda environment, and run the following verification stages sequentially.
 
 ### Phase 1: Environment Verification
 ```bash
 cd ~/data-qurater
 git pull origin main
-conda activate agent-rl
+conda activate QuRater
 
 # If modelscope is missing, install it first (do NOT upgrade PyTorch):
 python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple

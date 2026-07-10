@@ -20,8 +20,8 @@ import importlib.metadata
 report = {
     "python": sys.executable,
     "conda_env": os.environ.get("CONDA_DEFAULT_ENV", "Unknown"),
-    "expected_conda_env": "agent-rl",
-    "conda_env_matches_expected": (os.environ.get("CONDA_DEFAULT_ENV", "") == "agent-rl"),
+    "expected_conda_env": "QuRater",
+    "conda_env_matches_expected": (os.environ.get("CONDA_DEFAULT_ENV", "") == "QuRater"),
     "torch_version": "N/A",
     "torch_cuda": "N/A",
     "cuda_available": False,
@@ -168,14 +168,23 @@ with open("reports/server/environment_status.json", "w", encoding="utf-8") as f:
 
 # Print warnings/logs
 if not report["conda_env_matches_expected"]:
-    print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"agent-rl\".")
+    print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"QuRater\".")
+
+# Print warning for optional kernel libraries if missing
+if not report["fla_import_ok"] or not report["causal_conv1d_import_ok"]:
+    print("\n--- WARNING: QWEN3.5 OPTIONAL KERNEL WARNING ---")
+    print(f"  flash-linear-attention import status: {report[\"fla_import_ok\"]} (version: {report[\"flash_linear_attention_version\"]})")
+    print(f"  causal-conv1d import status:          {report[\"causal_conv1d_import_ok\"]} (version: {report[\"causal_conv1d_version\"]})")
+    print("  Note: These libraries are optional for Qwen3-0.6B but will be fast-path")
+    print("        dependencies for Qwen3.5 models. They do not fail the current check.")
+    print("------------------------------------------------\n")
 
 if status == "FAIL":
     print(f"[CRITICAL ERROR] Hard environment checks failed: {failures}")
     if "modelscope" in report["missing_packages"]:
         print("\n=== REMEDIATION INSTRUCTIONS ===")
         print("ModelScope is missing. Please run the following command to install it:")
-        print("  conda activate agent-rl")
+        print("  conda activate QuRater")
         print("  python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple")
         print("\n*IMPORTANT*: Do NOT upgrade, downgrade, or reinstall PyTorch during this process!")
         print("================================")
