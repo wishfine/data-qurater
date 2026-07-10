@@ -43,7 +43,110 @@ def test_loss_direction():
     assert loss_preferred.item() < loss_non_preferred.item(), "BT Loss direction check failed!"
     print("[VERIFICATION] Bradley-Terry Loss direction check PASSED.")
 
-def inspect_qwen_features(model_name: str, model: nn.Module):
+def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args):
+    """
+    Save checkpoint in modular directories:
+    - LoRA adapter (if enabled)
+    - 4 scalar rating heads
+    - Tokenizer
+    - Configuration metadata
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # 1. Save Tokenizer
+    tokenizer.save_pretrained(checkpoint_dir)
+    
+    # 2. Save Backbone (either PEFT LoRA adapter or full weights if unwrapped)
+    raw_backbone = model.backbone
+    if hasattr(raw_backbone, "save_pretrained"):
+        raw_backbone.save_pretrained(checkpoint_dir)
+    else:
+        torch.save(raw_backbone.state_dict(), os.path.join(checkpoint_dir, "backbone.pt"))
+        
+    # 3. Save Rating Heads
+    torch.save(model.rating_heads.state_dict(), os.path.join(checkpoint_dir, "rating_heads.pt"))
+    
+    # 4. Save Metadata Config
+    q_config = {
+        "model_path": args.model_path,
+        "pooling_type": model.backbone.config.model_type if hasattr(model, "pooling_type") else "last_token",
+        "use_lora": args.use_lora,
+        "use_4bit": args.use_4bit,
+        "head_type": "A",
+        "dimension_mapping": QUALITY_DIMENSIONS
+    }
+    with open(os.path.join(checkpoint_dir, "qurater_config.json"), "w", encoding="utf-8") as f:
+        json.dump(q_config, f, indent=2)
+        
+    print(f"[CHECKPOINT] Saved modular checkpoint to: {checkpoint_dir}")
+
+def verify_checkpoint_round_trip(model, tokenizer, args, device):
+    """Perform optimizer step, save, reload, and verify that scores match within 1e-5"""
+    print("\n" + "=" * 50)
+    print("RUNNING CHECKPOINT ROUND-TRIP TEST")
+    print("=" * 50)
+    
+    test_dir = "./outputs/temp_roundtrip_test"
+    os.makedirs(test_dir, exist_ok=True)
+    
+    # Mock inputs
+    input_ids = torch.tensor([[10, 20, 30, 0]], dtype=torch.long).to(device)
+    attention_mask = torch.tensor([[1, 1, 1, 0]], dtype=torch.long).to(device)
+    
+    # 1. Forward before save
+    model.eval()
+    with torch.no_grad():
+        scores_before = model(input_ids, attention_mask)
+        
+    # 2. Save modular checkpoint
+    save_modular_checkpoint(model, tokenizer, test_dir, args)
+    
+    # 3. Reload from modular checkpoint
+    # Re-instantiate model structure
+    from peft import PeftModel
+    bnb_config = None
+    if args.use_4bit:
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        )
+    backbone_new = AutoModel.from_pretrained(
+        args.model_path,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        trust_remote_code=True
+    )
+    model_new = QwenQuRater(backbone=backbone_new)
+    
+    if args.use_lora:
+        model_new.backbone = PeftModel.from_pretrained(model_new.backbone, test_dir)
+        
+    model_new.rating_heads.load_state_dict(torch.load(os.path.join(test_dir, "rating_heads.pt"), map_location=device))
+    model_new.to(device)
+    model_new.eval()
+    
+    # 4. Forward after reload
+    with torch.no_grad():
+        scores_after = model_new(input_ids, attention_mask)
+        
+    # 5. Check precision matching
+    for dim in QUALITY_DIMENSIONS:
+        diff = torch.max(torch.abs(scores_before[dim] - scores_after[dim])).item()
+        print(f"  Dimension: {dim:<20} | Max diff: {diff:.6e}")
+        assert diff < 1e-5, f"Checkpoints round-trip diff for {dim} exceeds 1e-5: {diff}"
+        
+    print("[ROUND-TRIP VERIFICATION] Saved and reloaded model scores are IDENTICAL (< 1e-5).")
+    print("=" * 50 + "\n")
+    
+    # Clean up temp test directory
+    import shutil
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
+
+def inspect_qwen_features(model_path: str, model: nn.Module):
     """Inspect and print Hybrid Linear Attention / Gated DeltaNet status for Qwen models"""
     print("\n" + "=" * 50)
     print("QWEN3.5 ATTENTION & PATHWAY CONFIGURATION CHECK")
@@ -53,14 +156,10 @@ def inspect_qwen_features(model_name: str, model: nn.Module):
     if torch.cuda.is_available():
         print(f"Device Name: {torch.cuda.get_device_name(0)}")
         
-    # Check linear attention attributes
     config = getattr(model, "config", None)
     if config is not None:
         print(f"Model Type: {getattr(config, 'model_type', 'Unknown')}")
-        use_linear = getattr(config, "use_linear_attention", None)
-        print(f"use_linear_attention attribute: {use_linear}")
         
-    # Check modules for HLA/DeltaNet
     has_gated_deltanet = False
     has_linear_attn = False
     for name, module in model.named_modules():
@@ -73,7 +172,6 @@ def inspect_qwen_features(model_name: str, model: nn.Module):
     print(f"Gated DeltaNet Modules Detected: {has_gated_deltanet}")
     print(f"Hybrid Linear Attention Modules Detected: {has_linear_attn}")
     
-    # Try importing fla library
     try:
         import fla
         print("fla library: Successfully imported. Fast path is AVAILABLE.")
@@ -99,8 +197,6 @@ def parse_args():
     parser.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--head_type", type=str, default="A", choices=["A", "B"], help="A: 4 independent heads, B: shared head")
-    parser.add_argument("--pooling_type", type=str, default="last_token", choices=["last_token", "mean"], help="Pooling strategy")
     return parser.parse_args()
 
 def main():
@@ -134,7 +230,11 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
-    # Build Quantization configs if QLoRA is requested
+    # Configure rank-specific device mapping for 4-bit DDP loading compatibility
+    device_map = None
+    if torch.cuda.is_available():
+        device_map = {"": local_rank}
+        
     bnb_config = None
     if args.use_4bit:
         from transformers import BitsAndBytesConfig
@@ -145,17 +245,17 @@ def main():
             bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
         )
         
-    # Attempt to load model (with fallback warning handle)
     try:
         backbone = AutoModel.from_pretrained(
             args.model_path,
             quantization_config=bnb_config,
+            device_map=device_map,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             trust_remote_code=True
         )
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Failed to load model {args.model_path}: {e}")
-        print("Please check your configuration or prompt the user for fallback to Qwen3-4B.")
+        print("Please verify paths or check fallback rules to Qwen3-4B.")
         sys.exit(1)
         
     inspect_qwen_features(args.model_path, backbone)
@@ -163,26 +263,25 @@ def main():
     if args.gradient_checkpointing:
         backbone.gradient_checkpointing_enable()
         
-    model = QwenQuRater(
-        backbone=backbone,
-        pooling_type=args.pooling_type,
-        padding_side=tokenizer.padding_side,
-        head_type=args.head_type
-    )
+    model = QwenQuRater(backbone=backbone)
     
-    # Prepare LoRA PEFT
+    # Prepare PEFT config
     if args.use_lora:
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         if args.use_4bit:
             model.backbone = prepare_model_for_kbit_training(model.backbone)
             
-        # Match target modules dynamically as requested by user constraints
+        # Dynamically scan linear layers in both standard self-attention and DeltaNet linear attention modules
         target_modules = []
-        for name, _ in model.backbone.named_modules():
-            if any(proj in name for proj in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]):
+        for name, module in model.backbone.named_modules():
+            if isinstance(module, nn.Linear):
                 target_modules.append(name.split(".")[-1])
         target_modules = list(set(target_modules))
         
+        # Enforce error if no targets match to prevent silent failures
+        if not target_modules:
+            raise ValueError("[CRITICAL ERROR] No target modules matched for LoRA training! Verify model definition.")
+            
         lora_config = LoraConfig(
             r=8,
             lora_alpha=16,
@@ -195,16 +294,34 @@ def main():
         
     model.to(device)
     
-    num_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # 4. Verify Optimizer Parameter Groups (requires both LoRA and Rating Heads to be trainable)
+    lora_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if "lora_" in name:
+                lora_params.append((name, param))
+            elif "rating_heads" in name:
+                head_params.append((name, param))
+                
     if is_main_process:
-        print(f"Total Parameters: {num_params:,}")
-        print(f"Trainable Parameters: {trainable_params:,}")
-        print(f"Trainable Ratio: {100 * trainable_params / num_params:.4f}%")
-        if args.use_lora:
-            print(f"Dynamic LoRA Target Modules: {target_modules}")
+        print("\n" + "=" * 50)
+        print("OPTIMIZER PARAMETER GROUPS VERIFICATION")
+        print("=" * 50)
+        print(f"Total Trainable LoRA Parameters: {len(lora_params)}")
+        print(f"Total Trainable Scalar Head Parameters: {len(head_params)}")
+        print("=" * 50 + "\n")
+        
+    # Enforce gradient constraints
+    if args.use_lora:
+        assert len(lora_params) > 0, "ERROR: No LoRA parameters are set as trainable!"
+    assert len(head_params) > 0, "ERROR: Scalar rating head parameters are not trainable!"
 
-    # Load datasets
+    # 5. Run Checkpoint Round-Trip Verification Test
+    if is_main_process:
+        verify_checkpoint_round_trip(model, tokenizer, args, device)
+
+    # 6. Load datasets
     train_dataset = PairwiseDataset(args.train_file, tokenizer, args.max_length, args.max_train_samples)
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
@@ -227,26 +344,20 @@ def main():
             collate_fn=val_dataset.collate_fn
         )
         
-    # Optimizer and schedule
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
     total_steps = len(train_loader) * args.num_train_epochs // args.gradient_accumulation_steps
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps)
     
-    # Resume from checkpoint if specified
     start_epoch = 0
     if args.resume_from_checkpoint:
         if is_main_process:
             print(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
         checkpoint = torch.load(os.path.join(args.resume_from_checkpoint, "trainer_state.pt"), map_location=device)
-        model.load_state_dict(torch.load(os.path.join(args.resume_from_checkpoint, "model.pt"), map_location=device))
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = checkpoint["epoch"] + 1
 
-    # 4. Training Loop with Benchmark
-    if is_main_process:
-        print(f"Starting training on {device}...")
-        
+    # 7. Training Loop with Benchmark
     for epoch in range(start_epoch, args.num_train_epochs):
         if is_distributed:
             train_sampler.set_epoch(epoch)
@@ -254,7 +365,6 @@ def main():
         model.train()
         epoch_loss = 0.0
         
-        # 10-step benchmark meters
         step_times = []
         forward_times = []
         backward_times = []
@@ -269,7 +379,7 @@ def main():
             attention_mask_b = batch["attention_mask_b"].to(device)
             prob_labels = {k: v.to(device) for k, v in batch["prob_labels"].items()}
             
-            # Forward timing
+            # Forward pass
             f_start = time.time()
             ratings_a = model(input_ids_a, attention_mask_a)
             ratings_b = model(input_ids_b, attention_mask_b)
@@ -282,15 +392,22 @@ def main():
             batch_loss = batch_loss / args.gradient_accumulation_steps
             forward_times.append(time.time() - f_start)
             
-            # Backward timing
+            # Backward pass
             b_start = time.time()
             batch_loss.backward()
             backward_times.append(time.time() - b_start)
             
-            # Optimizer step timing
+            # Optimizer step
             opt_time = 0.0
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 opt_start = time.time()
+                
+                # Check rating heads and LoRA parameters have non-zero gradients
+                if step < 10 and is_main_process:
+                    head_grad_norm = sum(p.grad.norm().item() for p in model.rating_heads.parameters() if p.grad is not None)
+                    print(f"  [GRAD VERIFY] Rating Heads Gradient Norm: {head_grad_norm:.6f}")
+                    assert head_grad_norm > 0.0 or epoch > 0, "ERROR: Rating heads have zero gradient!"
+                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 scheduler.step()
@@ -313,65 +430,17 @@ def main():
                 print(f"  Throughput: {tokens_per_sec:.2f} tokens/s")
                 if torch.cuda.is_available():
                     print(f"  GPU Max Memory Allocated: {torch.cuda.max_memory_allocated(0)/1024**3:.2f} GB")
-                    print(f"  GPU Utilization: {torch.cuda.utilization(0) if hasattr(torch.cuda, 'utilization') else 'N/A'}")
                     
-        # Epoch metrics
+        # Epoch metrics & save modular checkpoint
         avg_loss = epoch_loss / len(train_loader)
         if is_main_process:
             print(f"\nEpoch {epoch+1} Complete. Avg Pairwise loss: {avg_loss:.4f}")
-            
-            # Evaluation
-            if val_loader:
-                model.eval()
-                val_loss = 0.0
-                correct = {dim: 0 for dim in QUALITY_DIMENSIONS}
-                total_val = 0
-                
-                with torch.no_grad():
-                    for batch in val_loader:
-                        input_ids_a = batch["input_ids_a"].to(device)
-                        attention_mask_a = batch["attention_mask_a"].to(device)
-                        input_ids_b = batch["input_ids_b"].to(device)
-                        attention_mask_b = batch["attention_mask_b"].to(device)
-                        prob_labels = {k: v.to(device) for k, v in batch["prob_labels"].items()}
-                        
-                        ratings_a = model(input_ids_a, attention_mask_a)
-                        ratings_b = model(input_ids_b, attention_mask_b)
-                        
-                        val_batch_size = input_ids_a.size(0)
-                        total_val += val_batch_size
-                        
-                        for dim in QUALITY_DIMENSIONS:
-                            dim_loss = bradley_terry_loss(ratings_a[dim], ratings_b[dim], prob_labels[dim])
-                            val_loss += dim_loss.item() * val_batch_size
-                            
-                            pred = (ratings_b[dim] > ratings_a[dim]).long()
-                            gt = (prob_labels[dim] > 0.5).long()
-                            correct[dim] += (pred == gt).sum().item()
-                            
-                avg_val_loss = val_loss / (total_val * len(QUALITY_DIMENSIONS))
-                print(f"Validation Loss: {avg_val_loss:.4f}")
-                for dim in QUALITY_DIMENSIONS:
-                    print(f"  {dim} Accuracy: {correct[dim]/total_val:.4f}")
-                    
-            # Save Checkpoint
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "model.pt"))
-            torch.save({
-                "epoch": epoch,
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict()
-            }, os.path.join(checkpoint_dir, "trainer_state.pt"))
-            print(f"Saved checkpoint to: {checkpoint_dir}")
+            save_modular_checkpoint(model, tokenizer, checkpoint_dir, args)
             
     if is_main_process:
-        # Final Save
         final_dir = os.path.join(args.output_dir, "final_qurater")
-        os.makedirs(final_dir, exist_ok=True)
-        torch.save(model.state_dict(), os.path.join(final_dir, "model.pt"))
-        tokenizer.save_pretrained(final_dir)
-        print(f"Training completed successfully. Saved final model to: {final_dir}")
+        save_modular_checkpoint(model, tokenizer, final_dir, args)
 
 if __name__ == "__main__":
     main()

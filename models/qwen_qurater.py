@@ -12,43 +12,33 @@ QUALITY_DIMENSIONS = [
 
 class QwenQuRater(nn.Module):
     """
-    QwenQuRater Model implementing QuRating pairwise quality predictors.
+    QwenQuRater: Backbone model + 4 independent scalar heads for QuRating.
     
-    Supports:
-    - Scheme A: 4 independent classification heads (shared backbone).
-    - Scheme B: Single shared linear rating head, expecting dimension tokens in the input.
-    - Custom pooling: Last token (decoder default) and Mean pooling.
+    Enforces Scheme A:
+    - Shared Qwen backbone.
+    - 4 independent linear classification heads mapping hidden state to rating.
+    - Default pooling selects the hidden state of the last non-padding token.
     """
     def __init__(
         self, 
         backbone: nn.Module, 
-        hidden_size: Optional[int] = None, 
-        pooling_type: str = "last_token",
-        padding_side: str = "right",
-        head_type: str = "A"
+        hidden_size: Optional[int] = None
     ):
         super().__init__()
         self.backbone = backbone
-        self.pooling_type = pooling_type
-        self.padding_side = padding_side
-        self.head_type = head_type
         
         if hidden_size is None:
             hidden_size = self.backbone.config.hidden_size
             
         self.pad_token_id = self.backbone.config.pad_token_id
         if self.pad_token_id is None:
-            # Fallback to EOS
             self.pad_token_id = self.backbone.config.eos_token_id
             
-        # Scheme A: Four independent rating heads
+        # 4 independent scalar rating heads with bias=False (matching official LlamaForSequenceClassification)
         self.rating_heads = nn.ModuleDict({
             dim: nn.Linear(hidden_size, 1, bias=False)
             for dim in QUALITY_DIMENSIONS
         })
-        
-        # Scheme B: Single shared scalar head
-        self.scalar_head = nn.Linear(hidden_size, 1, bias=False)
 
     def forward(
         self, 
@@ -63,34 +53,32 @@ class QwenQuRater(nn.Module):
         )
         
         last_hidden = outputs.last_hidden_state
+        batch_size, seq_len, hidden_size = last_hidden.shape
         
-        # 1. Pooling hidden states
-        if self.pooling_type == "last_token":
-            if self.padding_side == "left":
-                # For left padding, the last token is at index -1
-                pooled = last_hidden[:, -1, :]
-            else:
-                # For right padding, locate the index of the last non-padding token
-                sequence_lengths = torch.eq(input_ids, self.pad_token_id).int().argmax(-1) - 1
-                sequence_lengths = sequence_lengths % input_ids.shape[-1]
-                pooled = last_hidden[torch.arange(last_hidden.size(0), device=last_hidden.device), sequence_lengths]
-        elif self.pooling_type == "mean":
-            # Mean pooling over non-padding tokens
-            hidden_mask = attention_mask.unsqueeze(-1).expand(last_hidden.size()).float()
-            pooled = torch.sum(last_hidden * hidden_mask, 1) / torch.clamp(hidden_mask.sum(1), min=1e-9)
-        else:
-            raise ValueError(f"Unknown pooling type: {self.pooling_type}")
+        # Pooling: Extract the hidden state of the last non-padding token.
+        # Works universally for left, right, mixed, or no padding.
+        non_pad_mask = torch.ne(input_ids, self.pad_token_id)
+        arange = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, seq_len)
+        indices = torch.where(non_pad_mask, arange, torch.tensor(-1, device=input_ids.device))
+        
+        sequence_lengths = indices.max(dim=-1).values
+        sequence_lengths = torch.clamp(sequence_lengths, min=0)
+        
+        pooled = last_hidden[torch.arange(batch_size, device=last_hidden.device), sequence_lengths]
 
-        # 2. Output heads
-        if self.head_type == "A":
-            ratings = {}
-            for dim in QUALITY_DIMENSIONS:
-                ratings[dim] = self.rating_heads[dim](pooled).squeeze(-1)
-            return ratings
-        elif self.head_type == "B":
-            # If dimension_id is provided, predict for that specific dimension.
-            # Otherwise return single scalar score
-            score = self.scalar_head(pooled).squeeze(-1)
-            return score
-        else:
-            raise ValueError(f"Unknown head type: {self.head_type}")
+        # Scheme A: Compute outputs from heads
+        if dimension_id is not None:
+            # Predict only for the specified dimension index for each sample in the batch
+            # dimension_id: (batch_size,) with values in [0, 1, 2, 3]
+            scores = []
+            for i in range(batch_size):
+                dim_idx = int(dimension_id[i].item())
+                dim_name = QUALITY_DIMENSIONS[dim_idx]
+                score = self.rating_heads[dim_name](pooled[i])
+                scores.append(score)
+            return torch.stack(scores).squeeze(-1)
+            
+        ratings = {}
+        for dim in QUALITY_DIMENSIONS:
+            ratings[dim] = self.rating_heads[dim](pooled).squeeze(-1)
+        return ratings

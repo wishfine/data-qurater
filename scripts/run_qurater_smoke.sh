@@ -6,7 +6,7 @@ set -e
 
 # Model path defaults to ModelScope Qwen3.5-4B or first argument
 MODEL_PATH=${1:-"Qwen/Qwen3.5-4B"}
-TRAIN_DATA="example_train_data.jsonl"
+TRAIN_DATA="data/qurating/smoke_train.jsonl"
 OUTPUT_DIR="./outputs/smoke_test"
 
 echo "=== RUNNING QWENQURATER SMOKE TEST ==="
@@ -28,8 +28,6 @@ python3 train_qurater_qwen.py \
     --max_train_samples 8 \
     --max_eval_samples 8 \
     --use_lora \
-    --pooling_type last_token \
-    --head_type A \
     --seed 42
 
 echo "=== SMOKE TEST RUN COMPLETED ==="

@@ -32,12 +32,11 @@ def chunk_text(text: str, tokenizer, max_tokens: int = 512) -> List[Dict[str, An
 def main():
     parser = argparse.ArgumentParser(description="Score text corpus with QwenQuRater")
     parser.add_argument("--model_path", type=str, required=True, help="Path to base model directory")
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the model.pt weights file")
+    parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to modular checkpoint directory")
     parser.add_argument("--input_file", type=str, required=True, help="Path to raw corpus JSONL file")
     parser.add_argument("--output_file", type=str, required=True, help="Path to output scored JSONL file")
     parser.add_argument("--max_length", type=int, default=512, help="Chunk token window limit")
     parser.add_argument("--pooling_type", type=str, default="last_token", help="Pooling strategy")
-    parser.add_argument("--head_type", type=str, default="A", help="Head type (A/B)")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,20 +56,29 @@ def main():
     model = QwenQuRater(
         backbone=backbone,
         pooling_type=args.pooling_type,
-        padding_side=tokenizer.padding_side,
-        head_type=args.head_type
+        padding_side=tokenizer.padding_side
     )
     
-    # Load weights
-    state_dict = torch.load(args.checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
+    # Load LoRA adapter if use_lora is true in config metadata
+    config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            q_config = json.load(f)
+        if q_config.get("use_lora", False):
+            from peft import PeftModel
+            print(f"Loading LoRA adapter from: {args.checkpoint_dir} ...")
+            model.backbone = PeftModel.from_pretrained(model.backbone, args.checkpoint_dir)
+            
+    # Load scalar heads
+    heads_path = os.path.join(args.checkpoint_dir, "rating_heads.pt")
+    model.rating_heads.load_state_dict(torch.load(heads_path, map_location=device))
+    
     model.to(device)
     model.eval()
 
     # 2. Iterate and score documents
     print(f"Scoring documents from: {args.input_file}")
     
-    # Check if input file exists
     if not os.path.exists(args.input_file):
         print(f"[ERROR] Input file does not exist: {args.input_file}")
         sys.exit(1)
@@ -87,15 +95,14 @@ def main():
                 continue
             item = json.loads(line)
             
-            # The corpus lines might have "text" or "content" keys
             doc_text = item.get("text", item.get("content", ""))
             
-            # Segment long documents into 512 token chunks
+            # Segment documents into token chunks (stride=max_length, overlap=0, add_special_tokens=False)
+            # matching the official tokenize_and_chunk logic
             chunks = chunk_text(doc_text, tokenizer, args.max_length)
             
             chunk_texts = [c["text"] for c in chunks]
             
-            # Run model predictions for all chunks of the document
             with torch.no_grad():
                 encodings = tokenizer(
                     chunk_texts,
@@ -105,10 +112,8 @@ def main():
                     return_tensors="pt"
                 ).to(device)
                 
-                # Forward pass
                 ratings = model(encodings["input_ids"], encodings["attention_mask"])
                 
-            # Extract scores
             chunk_ratings = []
             for i in range(len(chunks)):
                 ratings_i = {dim: float(ratings[dim][i].cpu().float().item()) for dim in QUALITY_DIMENSIONS}
@@ -126,9 +131,7 @@ def main():
             for dim in QUALITY_DIMENSIONS:
                 weighted_scores[dim] = weighted_scores[dim] / total_weight
                 
-            # Append scores to original record and write
             item["qurating_scores"] = weighted_scores
-            # Also keep chunk scores in metadata for debugging/detailed analysis
             item["qurating_chunks"] = chunk_ratings
             
             fout.write(json.dumps(item, ensure_ascii=False) + "\n")

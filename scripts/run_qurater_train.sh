@@ -6,8 +6,8 @@ set -e
 
 # Model and dataset paths
 MODEL_PATH=${1:-"Qwen/Qwen3.5-4B"}
-TRAIN_DATA=${2:-"example_train_data.jsonl"}
-VAL_DATA=${3:-"example_train_data.jsonl"}
+TRAIN_DATA=${2:-"data/qurating/smoke_train.jsonl"}
+VAL_DATA=${3:-"data/qurating/smoke_eval.jsonl"}
 OUTPUT_DIR="./outputs/qwen_qurater_full"
 
 echo "=== STARTING FULL QWENQURATER PAIRWISE TRAINING ==="
@@ -30,8 +30,6 @@ python3 train_qurater_qwen.py \
     --use_lora \
     --use_4bit \
     --gradient_checkpointing \
-    --pooling_type last_token \
-    --head_type A \
     --seed 42
 
 echo "=== FULL TRAINING COMPLETED ==="

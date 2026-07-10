@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
+from typing import List, Dict, Any
 
 from models.qwen_qurater import QwenQuRater, QUALITY_DIMENSIONS
 from data.qurating_dataset import PairwiseDataset
@@ -20,7 +21,6 @@ def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
     # Binarize ground truth labels around 0.5
     pos_labels = (y_true > 0.5).astype(int)
     if len(np.unique(pos_labels)) < 2:
-        # AUC is not well-defined if there is only 1 class present in the batch
         return 0.5
         
     pos_count = np.sum(pos_labels)
@@ -38,13 +38,12 @@ def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Evaluate QwenQuRater quality predictor")
     parser.add_argument("--model_path", type=str, required=True, help="Path to base model directory")
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the model.pt weights file")
+    parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to modular checkpoint directory")
     parser.add_argument("--eval_file", type=str, required=True, help="Path to evaluation dataset")
     parser.add_argument("--max_length", type=int, default=512, help="Max sequence length")
     parser.add_argument("--batch_size", type=int, default=4, help="Evaluation batch size")
     parser.add_argument("--output_file", type=str, default=None, help="Save evaluation metrics summary to this json file")
     parser.add_argument("--pooling_type", type=str, default="last_token", help="Pooling strategy")
-    parser.add_argument("--head_type", type=str, default="A", help="Head type (A/B)")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -65,13 +64,23 @@ def run_evaluation():
     model = QwenQuRater(
         backbone=backbone,
         pooling_type=args.pooling_type,
-        padding_side=tokenizer.padding_side,
-        head_type=args.head_type
+        padding_side=tokenizer.padding_side
     )
     
-    # Load weights
-    state_dict = torch.load(args.checkpoint_path, map_location=device)
-    model.load_state_dict(state_dict)
+    # Load LoRA adapter if use_lora is true in metadata config
+    config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            q_config = json.load(f)
+        if q_config.get("use_lora", False):
+            from peft import PeftModel
+            print(f"Loading LoRA adapter from: {args.checkpoint_dir} ...")
+            model.backbone = PeftModel.from_pretrained(model.backbone, args.checkpoint_dir)
+            
+    # Load scalar heads
+    heads_path = os.path.join(args.checkpoint_dir, "rating_heads.pt")
+    model.rating_heads.load_state_dict(torch.load(heads_path, map_location=device))
+    
     model.to(device)
     model.eval()
 
@@ -84,13 +93,9 @@ def run_evaluation():
     all_targets = {dim: [] for dim in QUALITY_DIMENSIONS}
     all_preds = {dim: [] for dim in QUALITY_DIMENSIONS}
     all_diffs = {dim: [] for dim in QUALITY_DIMENSIONS}
-    
-    # Swap check arrays
     swap_errors = {dim: [] for dim in QUALITY_DIMENSIONS}
     
-    # Domain specific tracker (requires parsing domains from raw file)
     domain_data = []
-    # Load raw lines to fetch domains
     with open(args.eval_file, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
@@ -125,13 +130,11 @@ def run_evaluation():
                 logits = r_b - r_a
                 p_pred = 1.0 / (1.0 + np.exp(-logits))
                 
-                # Swap checks
                 r_a_swap = ratings_a_swap[dim].cpu().float().numpy()
                 r_b_swap = ratings_b_swap[dim].cpu().float().numpy()
                 logits_swap = r_b_swap - r_a_swap
                 p_pred_swap = 1.0 / (1.0 + np.exp(-logits_swap))
                 
-                # Check swap consistency: p + p_swap should approximate 1.0
                 swap_sum = p_pred + p_pred_swap
                 swap_err = np.abs(swap_sum - 1.0)
                 
@@ -156,26 +159,17 @@ def run_evaluation():
         diffs = np.array(all_diffs[dim])
         swap_errs = np.array(swap_errors[dim])
         
-        # Calculate BCE loss
         bce_loss = float(-np.mean(targets * np.log(np.clip(preds, 1e-7, 1-1e-7)) + (1.0 - targets) * np.log(np.clip(1.0 - preds, 1e-7, 1-1e-7))))
         
-        # Accuracy: prediction sign matches target preference
         pred_label = (preds > 0.5).astype(int)
         gt_label = (targets > 0.5).astype(int)
         accuracy = float(np.mean(pred_label == gt_label))
         macro_acc.append(accuracy)
         
-        # AUC calculation
         auc_score = compute_auc(targets, preds)
-        
-        # Prediction confidence: how far predictions are from 0.5 (scaled 0-1)
         confidence = float(np.mean(np.abs(preds - 0.5)) * 2)
-        
-        # Score diffs distribution
         mean_diff = float(np.mean(diffs))
         std_diff = float(np.std(diffs))
-        
-        # Swap consistency error
         mean_swap_err = float(np.mean(swap_errs))
         
         print(f"Dimension: {dim}")
@@ -197,12 +191,10 @@ def run_evaluation():
             "swap_consistency_error": mean_swap_err
         }
 
-    # Macro accuracy
     mean_macro_acc = float(np.mean(macro_acc))
     print(f"Macro Accuracy across 4 Dimensions: {mean_macro_acc:.4f}")
     metrics_summary["macro_accuracy"] = mean_macro_acc
 
-    # Domain specific evaluation
     unique_domains = list(set(domain_data))
     domain_accuracies = {}
     
@@ -225,7 +217,6 @@ def run_evaluation():
             
         metrics_summary["domain_accuracies"] = domain_accuracies
         
-    # 5. Output file
     if args.output_file:
         with open(args.output_file, "w", encoding="utf-8") as f:
             json.dump(metrics_summary, f, indent=2)
