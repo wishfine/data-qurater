@@ -38,6 +38,11 @@ class QwenQuRater(nn.Module):
         self.pad_token_id = getattr(config, "pad_token_id", getattr(config, "eos_token_id", None))
             
         self.score = nn.Linear(hidden_size, 4, bias=False)
+        try:
+            backbone_dtype = next(self.backbone.parameters()).dtype
+            self.score = self.score.to(dtype=backbone_dtype)
+        except Exception:
+            pass
 
     def forward(
         self, 

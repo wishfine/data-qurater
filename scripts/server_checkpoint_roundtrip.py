@@ -70,7 +70,7 @@ def main():
 
     # 5. Initialize Rating Head
     model = QwenQuRater(backbone=backbone)
-    model.to(device)
+    model.to(device=device, dtype=dtype)
 
     # 6. Construct standard training batch via collate_fn
     mock_raw_batch = [
@@ -180,7 +180,7 @@ def main():
         pt_path = os.path.join(checkpoint_dir, "rating_head.pt")
         model_new.score.load_state_dict(torch.load(pt_path, map_location=device))
         
-    model_new.to(device)
+    model_new.to(device=device, dtype=dtype)
     model_new.eval()
 
     # 15. Calculate score after reload

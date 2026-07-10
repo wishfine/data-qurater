@@ -180,7 +180,8 @@ def run_evaluation():
             print(f"[CRITICAL ERROR] Rating head weights missing in {args.checkpoint_dir}")
             sys.exit(1)
         
-    model.to(device)
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    model.to(device=device, dtype=dtype)
     model.eval()
 
     # 2. Load Evaluation Dataset

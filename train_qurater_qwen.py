@@ -245,7 +245,7 @@ def main():
         )
         model.backbone = get_peft_model(model.backbone, lora_config)
         
-    model.to(device)
+    model.to(device=device, dtype=dtype)
     
     # Calculate parameter counts and ratios
     total_params = sum(p.numel() for p in model.parameters())
