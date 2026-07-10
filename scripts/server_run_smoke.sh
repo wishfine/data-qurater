@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# Environment Pre-check
+if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
+    echo "Environment verification has not passed."
+    echo "Run: bash scripts/server_check_env.sh"
+    exit 1
+fi
+
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 mkdir -p reports/server
 OUTPUT_FILE="reports/server/smoke_output.txt"
@@ -14,8 +21,8 @@ echo "Model Path: $MODEL_PATH" | tee -a "$OUTPUT_FILE"
 echo "----------------------------------------------" | tee -a "$OUTPUT_FILE"
 
 # Run 8 training pairs, batch_size=1, grad_accum=4.
-# Total steps = 8.
-# Optimizer steps = 8 / 4 = 2 steps.
+# Total micro-steps = 8.
+# Stop training exactly after 2 optimizer steps.
 python3 train_qurater_qwen.py \
     --model_path "$MODEL_PATH" \
     --train_file "data/qurating/smoke_train.jsonl" \
@@ -28,6 +35,7 @@ python3 train_qurater_qwen.py \
     --num_train_epochs 1 \
     --max_train_samples 8 \
     --max_eval_samples 8 \
+    --max_optimizer_steps 2 \
     --bf16 \
     --confidence_threshold 0.5 \
     --seed 42 2>&1 | tee -a "$OUTPUT_FILE"

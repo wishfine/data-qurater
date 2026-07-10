@@ -16,12 +16,17 @@ except Exception as e:
     print(f"[ERROR] Failed to download {MODEL_ID} from ModelScope: {e}")
     sys.exit(1)
 
-print("=" * 60)
-print("MODEL_ID:", MODEL_ID)
-print("MODEL_PATH:", model_dir)
-print("=" * 60)
+# Resolve real absolute path
+resolved_path = os.path.realpath(model_dir)
 
+# Assertions to prevent invalid model paths from writing
+assert os.path.isabs(resolved_path), f"Path is not absolute: {resolved_path}"
+assert os.path.isdir(resolved_path), f"Path is not a directory: {resolved_path}"
+assert os.path.isfile(os.path.join(resolved_path, "config.json")), f"config.json missing in {resolved_path}"
+
+# Write ONLY the absolute path, with no decorators/logs/headers
 os.makedirs("outputs", exist_ok=True)
 with open("outputs/model_path.txt", "w", encoding="utf-8") as f:
-    f.write(model_dir.strip())
-print(f"Saved actual model path to outputs/model_path.txt: {model_dir.strip()}")
+    f.write(resolved_path + "\n")
+
+print(f"Successfully downloaded and verified. Path written to outputs/model_path.txt")

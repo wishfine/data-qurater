@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# Environment Pre-check
+if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
+    echo "Environment verification has not passed."
+    echo "Run: bash scripts/server_check_env.sh"
+    exit 1
+fi
+
 mkdir -p reports/server
 OUTPUT_FILE="reports/server/data_direction_output.txt"
 

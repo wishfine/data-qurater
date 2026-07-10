@@ -1,0 +1,13 @@
+{
+  "seed": 42,
+  "source_file": "data/qurating/smoke_train_source.jsonl",
+  "source_sha256": "d407fae4815482b15fa58c4fea13018b60325ae8dc9b016c7f2e383f7a8af0ce",
+  "train_file": "data/qurating/smoke_train.jsonl",
+  "train_sha256": "9405b73eb8fa172f92494d87468e59234f74b5651a2e83ebd55a101066ca498f",
+  "eval_file": "data/qurating/smoke_eval.jsonl",
+  "eval_sha256": "25b91c65386171e54f86c49ed290d10087a227478718221d65d2c7e047ecaad8",
+  "train_size": 8,
+  "eval_size": 8,
+  "exact_pair_overlap": 0,
+  "swapped_pair_overlap": 0
+}

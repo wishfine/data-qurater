@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# Environment Pre-check
+if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
+    echo "Environment verification has not passed."
+    echo "Run: bash scripts/server_check_env.sh"
+    exit 1
+fi
+
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 EVAL_DATA="data/qurating/smoke_eval.jsonl"
 

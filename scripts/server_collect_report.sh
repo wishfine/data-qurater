@@ -67,13 +67,22 @@ echo "" >> "$OUTPUT_FILE"
 # 7. Smoke Test Report
 if [ -f "reports/server/smoke_output.txt" ]; then
     echo "[SMOKE TEST] Log found." >> "$OUTPUT_FILE"
-    grep -E "OPTIMIZER PARAMETER GROUPS|BENCHMARK STEP|Step Latency|Throughput|GPU Max Memory|GRAD VERIFY" reports/server/smoke_output.txt | tail -n 25 >> "$OUTPUT_FILE" || true
+    grep -E "OPTIMIZER PARAMETER GROUPS|BENCHMARK STEP|Step Latency|Throughput|GPU Max Memory|GRAD VERIFY|micro_step" reports/server/smoke_output.txt | tail -n 25 >> "$OUTPUT_FILE" || true
 else
     echo "[SMOKE TEST] Log NOT found!" >> "$OUTPUT_FILE"
 fi
 echo "" >> "$OUTPUT_FILE"
 
-# 8. Checkpoint Comparison Report
+# 8. Checkpoint Round-Trip Report
+if [ -f "reports/server/checkpoint_roundtrip.json" ]; then
+    echo "[CHECKPOINT ROUND-TRIP] Report found." >> "$OUTPUT_FILE"
+    cat reports/server/checkpoint_roundtrip.json >> "$OUTPUT_FILE"
+else
+    echo "[CHECKPOINT ROUND-TRIP] Report NOT found!" >> "$OUTPUT_FILE"
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# 9. Checkpoint Comparison Report
 if [ -f "reports/server/training_comparison.md" ]; then
     echo "[TRAINING COMPARISON] Table found." >> "$OUTPUT_FILE"
     cat reports/server/training_comparison.md >> "$OUTPUT_FILE"

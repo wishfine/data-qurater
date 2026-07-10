@@ -30,12 +30,6 @@ def bradley_terry_loss(
     confidences: torch.Tensor,
     confidence_threshold: float = 0.0
 ) -> torch.Tensor:
-    """
-    Bradley-Terry Pairwise Loss with BCE With Logits.
-    logit = s_B - s_A
-    P(B > A) = sigmoid(logit)
-    Handles zero-valid masks gracefully to prevent NaN.
-    """
     logits = ratings_b.float() - ratings_a.float()
     
     # Calculate unreduced pairwise loss
@@ -51,16 +45,6 @@ def bradley_terry_loss(
     return per_sample_loss[valid_mask].mean()
 
 def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, target_modules=None, optimizer=None, scheduler=None):
-    """
-    Save checkpoints in the mandated directory format:
-    checkpoint-epoch-{epoch}/
-    ├── adapter/
-    ├── rating_head.safetensors
-    ├── qurater_config.json
-    ├── tokenizer/
-    ├── training_args.json
-    └── trainer_state.pt
-    """
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     # 1. Save LoRA adapter (under adapter/)
@@ -170,6 +154,7 @@ def parse_args():
     parser.add_argument("--confidence_threshold", type=float, default=0.5, help="Confidence threshold filter")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--max_optimizer_steps", type=int, default=None, help="Stop training after reaching this number of optimizer steps")
     return parser.parse_args()
 
 def main():
@@ -338,6 +323,10 @@ def main():
         start_epoch = checkpoint["epoch"] + 1
 
     # 6. Training Loop
+    optimizer_step = 0
+    micro_step = 0
+    stop_training = False
+    
     for epoch in range(start_epoch, args.num_train_epochs):
         if is_distributed:
             train_sampler.set_epoch(epoch)
@@ -351,6 +340,7 @@ def main():
         optimizer_times = []
         
         for step, batch in enumerate(train_loader):
+            micro_step += 1
             step_start = time.time()
             
             input_ids_a = batch["input_ids_a"].to(device)
@@ -361,7 +351,7 @@ def main():
             dimension_ids = batch["dimension_ids"].to(device)
             confidences = batch["confidences"].to(device)
             
-            # Forward pass: extract score for specific dimension_id
+            # Forward pass
             f_start = time.time()
             ratings_a = model(input_ids_a, attention_mask_a, dimension_ids)
             ratings_b = model(input_ids_b, attention_mask_b, dimension_ids)
@@ -383,11 +373,11 @@ def main():
             
             # Optimizer step
             opt_time = 0.0
-            if (step + 1) % args.gradient_accumulation_steps == 0:
+            if micro_step % args.gradient_accumulation_steps == 0:
                 opt_start = time.time()
                 
                 # Check gradients on target server
-                if step < 10 and is_main_process:
+                if optimizer_step < 10 and is_main_process:
                     head_grad_norm = sum(p.grad.norm().item() for p in model.score.parameters() if p.grad is not None)
                     lora_grad_norm = sum(p.grad.norm().item() for name, p in model.named_parameters() if p.grad is not None and "lora_" in name)
                     
@@ -403,8 +393,17 @@ def main():
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+                
+                optimizer_step += 1
                 opt_time = time.time() - opt_start
                 optimizer_times.append(opt_time)
+                
+                if is_main_process:
+                    print(f"  [STEP] micro_step: {micro_step} | optimizer_step: {optimizer_step}")
+                    
+                if args.max_optimizer_steps is not None and optimizer_step >= args.max_optimizer_steps:
+                    stop_training = True
+                    break
                 
             step_times.append(time.time() - step_start)
             epoch_loss += batch_loss.item() * args.gradient_accumulation_steps
@@ -428,6 +427,11 @@ def main():
             print(f"\nEpoch {epoch+1} Complete. Avg Pairwise loss: {avg_loss:.4f}")
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
             save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler)
+            
+        if stop_training:
+            if is_main_process:
+                print(f"Reached max_optimizer_steps: {args.max_optimizer_steps}. Stopping training.")
+            break
             
     if is_main_process:
         final_dir = os.path.join(args.output_dir, "checkpoint-final")

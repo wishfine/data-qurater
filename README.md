@@ -42,7 +42,11 @@ data-qurater/
 │   ├── qwen3_06b_smoke.json     # Smoke test configuration
 │   └── qwen3_06b_train.json     # Full training configuration
 ├── scripts/
+│   ├── build_smoke_split.py     # Partition data into disjoint train/eval files
+│   ├── check_train_eval_overlap.py # Audit train/eval splits for leakage
+│   ├── server_download_model.py # ModelScope download script
 │   ├── server_download_model.sh # Script to download Qwen3-0.6B from ModelScope
+│   ├── server_verify_model_path.sh # Lightweight model path validation script
 │   ├── server_check_env.sh      # Script to verify server CUDA and library dependencies
 │   ├── server_run_unit_tests.sh # Script to execute unit tests
 │   ├── server_verify_data.sh    # Script to check data format, alignment and leakage
@@ -71,38 +75,54 @@ checkpoint-final/
 
 ---
 
-## 5. How to Execute on Target Server
+## 5. Multi-Stage Execution Workflow on Target Server
 
-Once pushed to GitHub, pull the changes on the target server, activate the `agent-rl` Conda environment, and run the following verification sequence:
+Once pushed to GitHub, pull the changes on the target server, activate the `agent-rl` Conda environment, and run the following verification stages sequentially.
 
+### Phase 1: Environment Verification
 ```bash
-# 1. Sync & activate environment
 cd ~/data-qurater
 git pull origin main
 conda activate agent-rl
 
-# 2. Download base model (ModelScope)
-bash scripts/server_download_model.sh
-
-# 3. Verify server hardware & dependencies
+# Verify server hardware, dependencies, and environment status
 bash scripts/server_check_env.sh
+```
 
-# 4. Run unittest suite (pooling, dimensions, loss NaN checks)
-bash scripts/server_run_unit_tests.sh
+### Phase 2: Model Acquisition & Path Validation
+*Proceed only if Phase 1 reports status PASS.*
+```bash
+# Download base model from ModelScope and verify path config
+bash scripts/server_download_model.sh
+bash scripts/server_verify_model_path.sh
+```
 
-# 5. Verify pairwise direction and train-eval leakage
+### Phase 3: Data Separation & Verification
+*Proceed only if Phase 2 passes verification.*
+```bash
+# Split dataset into disjoint train/eval pairs and verify leakage
+python3 scripts/build_smoke_split.py
 bash scripts/server_verify_data.sh
+```
 
-# 6. Evaluate baseline checkpoint-0
+### Phase 4: Unit Testing & Baseline Evaluation
+*Proceed only if Phase 3 data verification passes.*
+```bash
+# Run unit tests and save untrained baseline evaluation results
+bash scripts/server_run_unit_tests.sh
 bash scripts/server_run_baseline_eval.sh "$(cat outputs/model_path.txt)"
+```
 
-# 7. Run 2-step single GPU smoke test (BF16 LoRA)
+### Phase 5: Smoke Training Benchmark
+```bash
+# Run 2-step single GPU training benchmark (BF16 LoRA)
 bash scripts/server_run_smoke.sh "$(cat outputs/model_path.txt)"
+```
 
-# 8. Load & evaluate smoke checkpoint (round-trip comparison)
+### Phase 6: Checkpoint Load & Evaluation comparative audit
+```bash
+# Load reloaded smoke checkpoint, run round-trip, and compare metrics
 bash scripts/server_test_checkpoint.sh "$(cat outputs/model_path.txt)"
-
-# 9. Aggregate all reports
 bash scripts/server_collect_report.sh
 ```
 

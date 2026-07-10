@@ -1,36 +1,44 @@
 #!/bin/bash
 # server_test_checkpoint.sh
-# Run evaluation on smoke checkpoint and execute comparative analysis.
+# Check env status and execute checkpoint round-trip, evaluation, and comparative audits.
 
 set -euo pipefail
+
+# 1. Environment Pre-check
+if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
+    echo "Environment verification has not passed."
+    echo "Run: bash scripts/server_check_env.sh"
+    exit 1
+fi
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 CHECKPOINT_DIR="outputs/qwen3_06b_experiment/checkpoints/checkpoint-epoch-1"
 EVAL_DATA="data/qurating/smoke_eval.jsonl"
 
 mkdir -p reports/server outputs/qwen3_06b_experiment/evaluations
-OUTPUT_FILE="reports/server/checkpoint_output.txt"
 
-echo "=== RUNNING CHECKPOINT EVALUATION & COMPARISON ===" | tee "$OUTPUT_FILE"
-echo "Timestamp: $(date)" | tee -a "$OUTPUT_FILE"
-echo "Checkpoint Dir: $CHECKPOINT_DIR" | tee -a "$OUTPUT_FILE"
-echo "---------------------------------------------------" | tee -a "$OUTPUT_FILE"
+# 2. Step 1: Run actual checkpoint round-trip verification
+echo "=== STEP 1: RUNNING CHECKPOINT ROUND-TRIP VERIFICATION ==="
+python3 scripts/server_checkpoint_roundtrip.py \
+    --model_path "$MODEL_PATH" \
+    --tolerance 1e-4 2>&1 | tee reports/server/checkpoint_roundtrip_log.txt
 
-# 1. Evaluate trained smoke checkpoint
+# 3. Step 2: Run evaluation on smoke checkpoint-1
+echo "=== STEP 2: RUNNING EVALUATION ON SMOKE CHECKPOINT ==="
 python3 evaluate_qurater.py \
     --model_path "$MODEL_PATH" \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --eval_file "$EVAL_DATA" \
     --max_length 256 \
     --batch_size 2 \
-    --output_file "outputs/qwen3_06b_experiment/evaluations/smoke_eval.json" 2>&1 | tee -a "$OUTPUT_FILE"
+    --output_file "outputs/qwen3_06b_experiment/evaluations/smoke_eval.json" 2>&1 | tee reports/server/smoke_eval_log.txt
 
-# 2. Run checkpoint comparison script to compare checkpoint-0 and smoke checkpoints
+# 4. Step 3: Run baseline comparison
+echo "=== STEP 3: COMPARING BASELINE AND SMOKE METRICS ==="
 python3 compare_checkpoints.py \
     --eval_dir "outputs/qwen3_06b_experiment/evaluations" \
     --output_md "reports/server/training_comparison.md" \
     --output_json "reports/server/training_comparison.json" \
-    --learning_curve "outputs/qwen3_06b_experiment/evaluations/learning_curve.csv" 2>&1 | tee -a "$OUTPUT_FILE"
+    --learning_curve "outputs/qwen3_06b_experiment/evaluations/learning_curve.csv" 2>&1 | tee reports/server/checkpoint_comparison_log.txt
 
-echo "---------------------------------------------------" | tee -a "$OUTPUT_FILE"
-echo "Checkpoint test and comparative analysis complete. Saved to $OUTPUT_FILE"
+echo "[SUCCESS] All checkpoint tests and evaluations completed successfully."
