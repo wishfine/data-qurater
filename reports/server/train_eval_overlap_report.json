@@ -1,0 +1,10 @@
+{
+  "train_sha256": "9405b73eb8fa172f92494d87468e59234f74b5651a2e83ebd55a101066ca498f",
+  "eval_sha256": "25b91c65386171e54f86c49ed290d10087a227478718221d65d2c7e047ecaad8",
+  "same_file_content": false,
+  "exact_pair_overlap_count": 0,
+  "swapped_pair_overlap_count": 0,
+  "single_text_overlap_ratio": 0.0,
+  "duplicate_sample_id_count": 0,
+  "status": "PASS"
+}

@@ -77,13 +77,13 @@ checkpoint-final/
 
 ## 5. Multi-Stage Execution Workflow on Target Server
 
-Once pushed to GitHub, pull the changes on the target server, activate the `agent-rl` Conda environment, and run the following verification stages sequentially.
+Once pushed to GitHub, pull the changes on the target server, activate the `agentgym` Conda environment, and run the following verification stages sequentially.
 
 ### Phase 1: Environment Verification
 ```bash
 cd ~/data-qurater
 git pull origin main
-conda activate agent-rl
+conda activate agentgym
 
 # Verify server hardware, dependencies, and environment status
 bash scripts/server_check_env.sh

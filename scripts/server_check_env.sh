@@ -104,8 +104,8 @@ with open("reports/server/environment_status.json", "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2)
 
 # Print warnings/logs
-if report["conda_env"] != "agent-rl":
-    print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"agent-rl\".")
+if report["conda_env"] != "agentgym":
+    print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"agentgym\".")
 
 if status == "FAIL":
     print(f"[CRITICAL ERROR] Hard environment checks failed: {failures}")
