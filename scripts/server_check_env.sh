@@ -168,13 +168,18 @@ with open("reports/server/environment_status.json", "w", encoding="utf-8") as f:
 
 # Print warnings/logs
 if not report["conda_env_matches_expected"]:
-    print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"QuRater\".")
+    env_name = report["conda_env"]
+    print(f"WARNING: Conda environment name is \"{env_name}\", expected \"QuRater\".")
 
 # Print warning for optional kernel libraries if missing
 if not report["fla_import_ok"] or not report["causal_conv1d_import_ok"]:
+    fla_ok = report["fla_import_ok"]
+    fla_ver = report["flash_linear_attention_version"]
+    conv_ok = report["causal_conv1d_import_ok"]
+    conv_ver = report["causal_conv1d_version"]
     print("\n--- WARNING: QWEN3.5 OPTIONAL KERNEL WARNING ---")
-    print(f"  flash-linear-attention import status: {report[\"fla_import_ok\"]} (version: {report[\"flash_linear_attention_version\"]})")
-    print(f"  causal-conv1d import status:          {report[\"causal_conv1d_import_ok\"]} (version: {report[\"causal_conv1d_version\"]})")
+    print(f"  flash-linear-attention import status: {fla_ok} (version: {fla_ver})")
+    print(f"  causal-conv1d import status:          {conv_ok} (version: {conv_ver})")
     print("  Note: These libraries are optional for Qwen3-0.6B but will be fast-path")
     print("        dependencies for Qwen3.5 models. They do not fail the current check.")
     print("------------------------------------------------\n")
