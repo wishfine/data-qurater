@@ -62,8 +62,8 @@ class QwenQuRater(nn.Module):
         last_hidden = outputs.last_hidden_state
         batch_size, seq_len, hidden_size = last_hidden.shape
         
-        # Last non-padding token pooling
-        non_pad_mask = torch.ne(input_ids, self.pad_token_id)
+        # Last non-padding token pooling using attention_mask
+        non_pad_mask = torch.eq(attention_mask, 1)
         arange = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, seq_len)
         indices = torch.where(non_pad_mask, arange, torch.tensor(-1, device=input_ids.device))
         
