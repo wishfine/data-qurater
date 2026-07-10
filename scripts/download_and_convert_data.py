@@ -24,15 +24,27 @@ def dump_ds_to_jsonl(ds, path):
             # Convert calibrated_predictions or any other fields to primitive types for json compliance
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
+def download_with_retries(repo_id, max_retries=5, delay=5):
+    import time
+    for attempt in range(max_retries):
+        try:
+            print(f"Attempting to download {repo_id} (try {attempt+1}/{max_retries})...")
+            return load_dataset(repo_id)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            print(f"[RETRY WARNING] Connection error or timeout: {e}. Retrying in {delay}s...")
+            time.sleep(delay)
+
 def main():
     os.makedirs("data/qurating", exist_ok=True)
 
     # 1. Download official training judgments
     print("=== 1. DOWNLOADING PRINCETON QURATING TRAINING DATA ===")
     try:
-        train_ds = load_dataset("princeton-nlp/QuRating-GPT3.5-Judgments")
+        train_ds = download_with_retries("princeton-nlp/QuRating-GPT3.5-Judgments")
     except Exception as e:
-        print(f"[ERROR] Failed to download training dataset: {e}")
+        print(f"[ERROR] Failed to download training dataset after retries: {e}")
         sys.exit(1)
 
     temp_train_path = "data/qurating/temp_train.jsonl"
@@ -41,9 +53,9 @@ def main():
     # 2. Download official evaluation judgments
     print("\n=== 2. DOWNLOADING PRINCETON QURATING TEST DATA ===")
     try:
-        eval_ds = load_dataset("princeton-nlp/QuRating-GPT3.5-Judgments-Test")
+        eval_ds = download_with_retries("princeton-nlp/QuRating-GPT3.5-Judgments-Test")
     except Exception as e:
-        print(f"[ERROR] Failed to download test dataset: {e}")
+        print(f"[ERROR] Failed to download test dataset after retries: {e}")
         sys.exit(1)
 
     temp_eval_path = "data/qurating/temp_eval.jsonl"
