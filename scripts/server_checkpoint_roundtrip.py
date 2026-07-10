@@ -38,7 +38,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 3. Load Qwen3-0.6B Base Model
+    # 3. Load Qwen3.5-4B Base Model
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     backbone = AutoModel.from_pretrained(
         args.model_path,

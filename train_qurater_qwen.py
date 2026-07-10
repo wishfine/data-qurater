@@ -69,7 +69,7 @@ def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, targe
     
     # 4. Save qurater_config.json
     q_config = {
-        "model_id": "Qwen/Qwen3-0.6B",
+        "model_id": "Qwen/Qwen3.5-4B",
         "base_model_path": args.model_path,
         "dimensions": DIMENSION_NAMES,
         "pooling": "last_non_padding",
@@ -100,7 +100,7 @@ def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, targe
     print(f"[CHECKPOINT] Saved modular checkpoint directory to: {checkpoint_dir}")
 
 def save_experiment_metadata(args, val_dataset):
-    os.makedirs("outputs/qwen3_06b_experiment", exist_ok=True)
+    os.makedirs("outputs/qwen35_4b_experiment", exist_ok=True)
     
     # Helper to calculate file SHA256
     def get_sha256(path):
@@ -117,7 +117,7 @@ def save_experiment_metadata(args, val_dataset):
     
     # 1. Save eval_manifest.json
     manifest = {
-        "model_id": "Qwen/Qwen3-0.6B",
+        "model_id": "Qwen/Qwen3.5-4B",
         "model_path": args.model_path,
         "validation_file": val_file_path,
         "validation_file_sha256": val_sha,
@@ -127,19 +127,19 @@ def save_experiment_metadata(args, val_dataset):
         "confidence_threshold": args.confidence_threshold,
         "dimensions": DIMENSION_NAMES
     }
-    with open("outputs/qwen3_06b_experiment/eval_manifest.json", "w", encoding="utf-8") as f:
+    with open("outputs/qwen35_4b_experiment/eval_manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         
     # 2. Save experiment_config.json
-    with open("outputs/qwen3_06b_experiment/experiment_config.json", "w", encoding="utf-8") as f:
+    with open("outputs/qwen35_4b_experiment/experiment_config.json", "w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train QwenQuRater with Bradley-Terry Pairwise Loss")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to base Qwen3-0.6B model")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to base Qwen3.5-4B model")
     parser.add_argument("--train_file", type=str, required=True, help="Path to pairwise training json/jsonl")
     parser.add_argument("--validation_file", type=str, default=None, help="Path to pairwise validation json/jsonl")
-    parser.add_argument("--output_dir", type=str, default="./outputs/qwen3_06b_experiment/checkpoints", help="Directory to save checkpoints")
+    parser.add_argument("--output_dir", type=str, default="./outputs/qwen35_4b_experiment/checkpoints", help="Directory to save checkpoints")
     parser.add_argument("--max_length", type=int, default=256, help="Maximum token length")
     parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="Batch size per device")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
@@ -179,7 +179,7 @@ def main():
     
     # 2. Load Model and Tokenizer
     if is_main_process:
-        print(f"Loading Qwen3-0.6B base model from: {args.model_path}")
+        print(f"Loading Qwen3.5-4B base model from: {args.model_path}")
         
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     tokenizer.padding_side = "right"  # Fixed padding side to right
@@ -267,7 +267,7 @@ def main():
         print("\n" + "=" * 50)
         print("OPTIMIZER PARAMETER GROUPS VERIFICATION")
         print("=" * 50)
-        print(f"Model ID                  : Qwen/Qwen3-0.6B")
+        print(f"Model ID                  : Qwen/Qwen3.5-4B")
         print(f"Model Hidden Size         : {model.backbone.config.hidden_size}")
         print(f"Backbone Layer Count      : {getattr(model.backbone.config, 'num_hidden_layers', 'Unknown')}")
         if args.use_lora:
@@ -296,7 +296,7 @@ def main():
         save_experiment_metadata(args, val_dataset)
 
     # 5. Save untrained checkpoint-0 baseline BEFORE any optimizer steps
-    checkpoint_0_dir = "outputs/qwen3_06b_experiment/checkpoint-0"
+    checkpoint_0_dir = "outputs/qwen35_4b_experiment/checkpoint-0"
     if is_main_process:
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
 

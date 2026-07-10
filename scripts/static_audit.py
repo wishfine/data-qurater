@@ -66,7 +66,7 @@ def audit():
                 results["errors"].append("server_verify_data.sh does not call build_smoke_split.py")
 
     # 2. Check for banned environment names and connected components terminology
-    banned = ["agent-rl", "research-rl"]
+    banned = ["agentgym", "research-rl"]
     banned_terms = ["strongly connected component", "强连通分量"]
     exclude_dirs = [".git", "reports", "outputs", "scratch"]
     

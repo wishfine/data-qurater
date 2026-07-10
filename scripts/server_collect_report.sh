@@ -6,7 +6,7 @@ set -u
 
 OUTPUT_FILE="reports/server/server_verification_summary.txt"
 
-echo "=== SERVER VERIFICATION SUMMARY REPORT (QWEN3-0.6B) ===" > "$OUTPUT_FILE"
+echo "=== SERVER VERIFICATION SUMMARY REPORT (QWEN3.5-4B) ===" > "$OUTPUT_FILE"
 echo "Timestamp: $(date)" >> "$OUTPUT_FILE"
 echo "=======================================================" >> "$OUTPUT_FILE"
 

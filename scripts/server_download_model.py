@@ -2,7 +2,7 @@ import os
 import sys
 from modelscope import snapshot_download
 
-MODEL_ID = "Qwen/Qwen3-0.6B"
+MODEL_ID = "Qwen/Qwen3.5-4B"
 CACHE_DIR = "/home/zhangyonglin/models"
 
 os.makedirs(CACHE_DIR, exist_ok=True)

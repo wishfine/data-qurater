@@ -1,7 +1,7 @@
 {
-  "model_id": "Qwen/Qwen3-0.6B",
+  "model_id": "Qwen/Qwen3.5-4B",
   "model_path_file": "outputs/model_path.txt",
-  "experiment_name": "qwen3_06b_smoke",
+  "experiment_name": "qwen35_4b_smoke",
   "seed": 42,
   "max_length": 256,
   "use_4bit": false,

@@ -16,7 +16,7 @@ def main():
         print(f"[ERROR] Failed to read or parse environment status JSON: {e}")
         sys.exit(1)
         
-    expected_env = data.get("expected_conda_env", "agentgym")
+    expected_env = data.get("expected_conda_env", "agent-rl")
     current_env = os.environ.get("CONDA_DEFAULT_ENV", "")
 
     if current_env != expected_env:

@@ -1,6 +1,6 @@
-# QuRating Methodology Reproduction with Qwen3-0.6B
+# QuRating Methodology Reproduction with Qwen3.5-4B
 
-This repository contains the reproduction of the data quality rating framework **QuRating** (ICML 2024 Spotlight), adapted to a **Qwen3-0.6B** backbone.
+This repository contains the reproduction of the data quality rating framework **QuRating** (ICML 2024 Spotlight), adapted to a **Qwen3.5-4B** backbone.
 
 ---
 
@@ -39,14 +39,14 @@ data-qurater/
 ├── score_corpus.py              # Document scorer with length-weighted sliding window
 ├── compare_checkpoints.py       # Checkpoint comparisons & learning curve exporter
 ├── configs/
-│   ├── qwen3_06b_smoke.json     # Smoke test configuration
-│   └── qwen3_06b_train.json     # Full training configuration
+│   ├── qwen3_06b_smoke.json     # Smoke test configuration (pointing to Qwen3.5-4B)
+│   └── qwen3_06b_train.json     # Full training configuration (pointing to Qwen3.5-4B)
 ├── scripts/
 │   ├── build_smoke_split.py     # Partition data into disjoint train/eval files via connected components
 │   ├── check_train_eval_overlap.py # Audit train/eval splits for leakage
 │   ├── check_environment_status.py # Check stored env status and verify live environment properties
 │   ├── server_download_model.py # ModelScope download script
-│   ├── server_download_model.sh # Script to download Qwen3-0.6B from ModelScope
+│   ├── server_download_model.sh # Script to download Qwen3.5-4B from ModelScope
 │   ├── server_verify_model_path.sh # Lightweight model path validation script
 │   ├── server_check_env.sh      # Script to verify server CUDA and library dependencies
 │   ├── server_run_unit_tests.sh # Script to execute unit tests
@@ -78,13 +78,13 @@ checkpoint-final/
 
 ## 5. Multi-Stage Execution Workflow on Target Server
 
-Once pushed to GitHub, pull the changes on the target server, activate the `agentgym` Conda environment, and run the following verification stages sequentially.
+Once pushed to GitHub, pull the changes on the target server, activate the `agent-rl` Conda environment, and run the following verification stages sequentially.
 
 ### Phase 1: Environment Verification
 ```bash
 cd ~/data-qurater
 git pull origin main
-conda activate agentgym
+conda activate agent-rl
 
 # If modelscope is missing, install it first (do NOT upgrade PyTorch):
 python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
