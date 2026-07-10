@@ -136,6 +136,7 @@ class OfficialQuRatingDatasetAdapter:
     @staticmethod
     def convert_file(input_path: str, output_path: str):
         print(f"Converting official dataset from {input_path} to {output_path} ...")
+        import ast
         
         # Load raw lines (expecting jsonl or json)
         records = []
@@ -149,28 +150,83 @@ class OfficialQuRatingDatasetAdapter:
         with open(output_path, "w", encoding="utf-8") as fout:
             for item in records:
                 texts = item.get("texts", [])
-                # calibrated_predictions is a 3D matrix of shape (K, K, num_labels)
-                calibrated = item.get("calibrated_predictions", [])
-                domain = item.get("domain", "general")
-                
+                if isinstance(texts, str):
+                    try:
+                        texts = ast.literal_eval(texts)
+                    except Exception:
+                        continue
+                        
                 K = len(texts)
-                if K < 2 or not calibrated:
+                if K < 2:
+                    continue
+                    
+                # Determine domain(s)
+                domain = item.get("domain", item.get("source_domains", "general"))
+                if isinstance(domain, str):
+                    if domain.startswith("[") and domain.endswith("]"):
+                        try:
+                            domain = ast.literal_eval(domain)
+                        except Exception:
+                            pass
+                
+                # Check format types
+                # Format A (Old): 'calibrated_predictions' is a 3D matrix (K, K, 4)
+                # Format B (New): separate 'writing_style_average', etc. 2D matrices (K, K)
+                calibrated = item.get("calibrated_predictions", [])
+                if isinstance(calibrated, str):
+                    try:
+                        calibrated = ast.literal_eval(calibrated)
+                    except Exception:
+                        calibrated = []
+                
+                has_calibrated = (isinstance(calibrated, list) and len(calibrated) > 0)
+                
+                matrices = {}
+                for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
+                    key = f"{dim_name}_average"
+                    raw_mat = item.get(key)
+                    if raw_mat is not None:
+                        if isinstance(raw_mat, str):
+                            try:
+                                matrices[dim_idx] = ast.literal_eval(raw_mat)
+                            except Exception:
+                                pass
+                        elif isinstance(raw_mat, list):
+                            matrices[dim_idx] = raw_mat
+                            
+                has_matrices = (len(matrices) == len(DIMENSION_NAMES))
+                
+                if not has_calibrated and not has_matrices:
                     continue
                     
                 for i in range(K):
                     for j in range(K):
                         if i == j:
                             continue
-                        # In official code: j is preferred to i
-                        # target = calibrated[i][j][d]
-                        for dim_idx in range(len(DIMENSION_NAMES)):
+                            
+                        # Map domains
+                        if isinstance(domain, list):
                             try:
-                                target = float(calibrated[i][j][dim_idx])
+                                pair_domain = f"{domain[i]}_{domain[j]}"
                             except IndexError:
-                                continue
-                                
-                            # -100 indicates masked/unlabeled pairs in official code
-                            if target == -100:
+                                pair_domain = "general"
+                        else:
+                            pair_domain = str(domain)
+                            
+                        for dim_idx in range(len(DIMENSION_NAMES)):
+                            target = None
+                            if has_calibrated:
+                                try:
+                                    target = float(calibrated[i][j][dim_idx])
+                                except (IndexError, TypeError):
+                                    pass
+                            elif dim_idx in matrices:
+                                try:
+                                    target = float(matrices[dim_idx][i][j])
+                                except (IndexError, TypeError):
+                                    pass
+                                    
+                            if target is None or target == -100:
                                 continue
                                 
                             confidence = 2.0 * abs(target - 0.5)
@@ -181,7 +237,7 @@ class OfficialQuRatingDatasetAdapter:
                                 "target": target,
                                 "dimension_id": dim_idx,
                                 "confidence": confidence,
-                                "domain": domain
+                                "domain": pair_domain
                             }
                             fout.write(json.dumps(pairwise_record, ensure_ascii=False) + "\n")
                             total_converted += 1
