@@ -66,8 +66,9 @@ class NormalizedPairwiseDataset(Dataset):
             with open(data_path, "rb") as f:
                 offset = 0
                 for line in f:
-                    # Skip empty lines (only has newline character)
-                    if len(line) > 1:
+                    # Strip to verify if it's not empty
+                    stripped = line.strip()
+                    if stripped:
                         self.offsets.append(offset)
                     offset += len(line)
                     
@@ -141,10 +142,9 @@ class NormalizedPairwiseDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         if self.use_lazy_loading:
             if self.file_handle is None:
-                self.file_handle = open(self.data_path, "rb")
+                self.file_handle = open(self.data_path, "r", encoding="utf-8")
             self.file_handle.seek(self.offsets[idx])
-            line_bytes = self.file_handle.readline()
-            line = line_bytes.decode("utf-8")
+            line = self.file_handle.readline()
             return json.loads(line)
         return self.examples[idx]
         
