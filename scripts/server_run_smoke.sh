@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Environment Pre-check via python helper
-python3 scripts/check_environment_status.py
+python scripts/check_environment_status.py
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 mkdir -p reports/server
@@ -19,7 +19,7 @@ echo "----------------------------------------------" | tee -a "$OUTPUT_FILE"
 # Run 8 training pairs, batch_size=1, grad_accum=4.
 # Total micro-steps = 8.
 # Stop training exactly after 2 optimizer steps.
-python3 train_qurater_qwen.py \
+python train_qurater_qwen.py \
     --model_path "$MODEL_PATH" \
     --train_file "data/qurating/smoke_train.jsonl" \
     --validation_file "data/qurating/smoke_eval.jsonl" \

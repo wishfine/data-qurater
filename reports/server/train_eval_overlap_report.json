@@ -1,10 +1,14 @@
 {
-  "train_sha256": "9405b73eb8fa172f92494d87468e59234f74b5651a2e83ebd55a101066ca498f",
-  "eval_sha256": "25b91c65386171e54f86c49ed290d10087a227478718221d65d2c7e047ecaad8",
+  "train_sha256": "8a968bd9e0d6fe9c7a1beaa6d09f4b6b9e54cb2337ac9e84dab6f8d75d320799",
+  "eval_sha256": "b9e72d46d915990e4c72b71e6816c0ccc0c83a3571ba4ad5ff8ec40fbe55caa0",
   "same_file_content": false,
   "exact_pair_overlap_count": 0,
   "swapped_pair_overlap_count": 0,
+  "shared_text_count": 0,
   "single_text_overlap_ratio": 0.0,
-  "duplicate_sample_id_count": 0,
+  "manifest_matches_current_files": true,
+  "source_hash_matches": true,
+  "train_hash_matches": true,
+  "eval_hash_matches": true,
   "status": "PASS"
 }

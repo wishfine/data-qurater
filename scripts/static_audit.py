@@ -23,24 +23,51 @@ def audit():
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
             
-        # server_collect_report.sh is allowed to run without set -e to gather all failures
+        # server_collect_report.sh is allowed to run without set -e or environment checks
         if sf == "server_collect_report.sh":
             if "set -u" not in content:
                 results["static_policy_audit"] = "failed"
                 results["errors"].append(f"{sf} is missing 'set -u'")
+        elif sf == "server_verify_model_path.sh":
+            # This is a light path verifier, doesn't need PyTorch/CUDA checks
+            if "set -euo pipefail" not in content:
+                results["static_policy_audit"] = "failed"
+                results["errors"].append(f"{sf} is missing 'set -euo pipefail'")
+        elif sf == "server_check_env.sh":
+            # This generates the status JSON, so it must not check it
+            if "set -euo pipefail" not in content:
+                results["static_policy_audit"] = "failed"
+                results["errors"].append(f"{sf} is missing 'set -euo pipefail'")
         else:
             # Must contain set -euo pipefail
             if "set -euo pipefail" not in content and "set -e" not in content:
                 results["static_policy_audit"] = "failed"
                 results["errors"].append(f"{sf} does not enforce strict fail-fast (missing set -euo pipefail or set -e)")
+            
+            # Check environment check status script is invoked
+            if "check_environment_status.py" not in content:
+                results["static_policy_audit"] = "failed"
+                results["errors"].append(f"{sf} does not call check_environment_status.py")
                 
         # Check tee safety
         if "tee" in content and "pipefail" not in content:
             results["static_policy_audit"] = "failed"
             results["errors"].append(f"{sf} uses tee without pipefail enabled")
 
-    # 2. Check for banned environment names (agent-rl, research-rl)
+        # Check for unconfirmed python3 calls in server scripts
+        if "python3" in content:
+            results["static_policy_audit"] = "failed"
+            results["errors"].append(f"{sf} uses unconfirmed python3 command; use python instead")
+
+        # Specific check for server_verify_data.sh
+        if sf == "server_verify_data.sh":
+            if "build_smoke_split.py" not in content:
+                results["static_policy_audit"] = "failed"
+                results["errors"].append("server_verify_data.sh does not call build_smoke_split.py")
+
+    # 2. Check for banned environment names and connected components terminology
     banned = ["agent-rl", "research-rl"]
+    banned_terms = ["strongly connected component", "强连通分量"]
     exclude_dirs = [".git", "reports", "outputs", "scratch"]
     
     for root, dirs, files in os.walk("."):
@@ -55,10 +82,16 @@ def audit():
                     with open(path, "r", encoding="utf-8") as f:
                         lines = f.readlines()
                     for idx, line in enumerate(lines):
+                        # check banned env names
                         for b in banned:
                             if b in line:
                                 results["static_policy_audit"] = "failed"
                                 results["errors"].append(f"{path}:L{idx+1} contains banned environment name '{b}'")
+                        # check banned terms
+                        for t in banned_terms:
+                            if t in line:
+                                results["static_policy_audit"] = "failed"
+                                results["errors"].append(f"{path}:L{idx+1} contains incorrect terminology '{t}' (use 'connected component' or '连通分量')")
                 except Exception:
                     pass
 

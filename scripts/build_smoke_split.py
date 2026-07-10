@@ -24,17 +24,22 @@ def get_sha256(path):
 def normalize_text(text):
     return " ".join(text.strip().split())
 
-def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
+def build_split(source_file, train_file, eval_file, manifest_file, raw_train_target=4, raw_eval_target=4, seed=42):
     print("=== PARTITIONING SMOKE TRAIN AND EVAL DATA (TEXT-DISJOINT) ===")
+    print(f"Source file   : {source_file}")
+    print(f"Train output  : {train_file}")
+    print(f"Eval output   : {eval_file}")
+    print(f"Manifest output: {manifest_file}")
+    
     random.seed(seed)
     
-    if not os.path.exists(input_path):
-        print(f"[ERROR] Source file not found: {input_path}")
+    if not os.path.exists(source_file):
+        print(f"[ERROR] Source file not found: {source_file}")
         sys.exit(1)
         
     # Read raw pairwise items
     raw_items = []
-    with open(input_path, "r", encoding="utf-8") as f:
+    with open(source_file, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 raw_items.append(json.loads(line))
@@ -44,7 +49,7 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
         item["norm_a"] = normalize_text(item["text_a"])
         item["norm_b"] = normalize_text(item["text_b"])
         
-    # Build Graph: find connected components
+    # Build Graph: find connected components (无向图连通分量)
     adj = defaultdict(list)
     for idx, item in enumerate(raw_items):
         u = item["norm_a"]
@@ -60,7 +65,7 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
         if start_node in visited_nodes:
             continue
             
-        # BFS to find component
+        # BFS to find connected component (连通分量)
         comp_item_indices = set()
         queue = [start_node]
         visited_nodes.add(start_node)
@@ -75,7 +80,7 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
                     
         components.append(list(comp_item_indices))
         
-    print(f"Detected {len(components)} text-connected components.")
+    print(f"Detected {len(components)} text-connected components (连通分量).")
     
     # Shuffle components
     random.shuffle(components)
@@ -144,8 +149,8 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
     assert len(shared_texts) == 0, f"[CRITICAL ERROR] Text leak detected! Shared texts: {shared_texts}"
     
     # Save files
-    train_file = "data/qurating/smoke_train.jsonl"
-    eval_file = "data/qurating/smoke_eval.jsonl"
+    os.makedirs(os.path.dirname(train_file), exist_ok=True)
+    os.makedirs(os.path.dirname(eval_file), exist_ok=True)
     
     with open(train_file, "w", encoding="utf-8") as f:
         for r in train_records:
@@ -156,11 +161,11 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             
     # Save manifest
-    manifest_path = "data/qurating/smoke_split_manifest.json"
+    os.makedirs(os.path.dirname(manifest_file), exist_ok=True)
     manifest = {
         "seed": seed,
-        "source_file": input_path,
-        "source_sha256": get_sha256(input_path),
+        "source_file": source_file,
+        "source_sha256": get_sha256(source_file),
         "train_file": train_file,
         "train_sha256": get_sha256(train_file),
         "eval_file": eval_file,
@@ -178,7 +183,7 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
         "exact_pair_overlap": 0,
         "swapped_pair_overlap": 0
     }
-    with open(manifest_path, "w", encoding="utf-8") as f:
+    with open(manifest_file, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         
     print(f"[SUCCESS] Disjoint split complete. Train records: {len(train_records)}, Eval records: {len(eval_records)}")
@@ -186,10 +191,21 @@ def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, default="data/qurating/smoke_train_source.jsonl")
-    parser.add_argument("--train_size", type=int, default=4)
-    parser.add_argument("--eval_size", type=int, default=4)
+    parser.add_argument("--source_file", type=str, default="data/qurating/smoke_train_source.jsonl")
+    parser.add_argument("--train_file", type=str, default="data/qurating/smoke_train.jsonl")
+    parser.add_argument("--eval_file", type=str, default="data/qurating/smoke_eval.jsonl")
+    parser.add_argument("--manifest_file", type=str, default="data/qurating/smoke_split_manifest.json")
+    parser.add_argument("--train_size", type=int, default=4, help="Target number of raw train connected components")
+    parser.add_argument("--eval_size", type=int, default=4, help="Target number of raw eval connected components")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     
-    build_split(args.input, args.train_size, args.eval_size, args.seed)
+    build_split(
+        args.source_file,
+        args.train_file,
+        args.eval_file,
+        args.manifest_file,
+        args.train_size,
+        args.eval_size,
+        args.seed
+    )

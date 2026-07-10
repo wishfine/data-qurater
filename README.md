@@ -42,14 +42,15 @@ data-qurater/
 │   ├── qwen3_06b_smoke.json     # Smoke test configuration
 │   └── qwen3_06b_train.json     # Full training configuration
 ├── scripts/
-│   ├── build_smoke_split.py     # Partition data into disjoint train/eval files
+│   ├── build_smoke_split.py     # Partition data into disjoint train/eval files via connected components
 │   ├── check_train_eval_overlap.py # Audit train/eval splits for leakage
+│   ├── check_environment_status.py # Check stored env status and verify live environment properties
 │   ├── server_download_model.py # ModelScope download script
 │   ├── server_download_model.sh # Script to download Qwen3-0.6B from ModelScope
 │   ├── server_verify_model_path.sh # Lightweight model path validation script
 │   ├── server_check_env.sh      # Script to verify server CUDA and library dependencies
 │   ├── server_run_unit_tests.sh # Script to execute unit tests
-│   ├── server_verify_data.sh    # Script to check data format, alignment and leakage
+│   ├── server_verify_data.sh    # Script to check data format, alignment and leakage (rebuilds splits)
 │   ├── server_run_baseline_eval.sh  # Script to evaluate baseline (checkpoint-0)
 │   ├── server_run_smoke.sh      # Script to run 2-step training smoke test
 │   ├── server_test_checkpoint.sh # Script to evaluate reloaded smoke checkpoint
@@ -85,6 +86,9 @@ cd ~/data-qurater
 git pull origin main
 conda activate agentgym
 
+# If modelscope is missing, install it first (do NOT upgrade PyTorch):
+python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 # Verify server hardware, dependencies, and environment status
 bash scripts/server_check_env.sh
 ```
@@ -100,8 +104,7 @@ bash scripts/server_verify_model_path.sh
 ### Phase 3: Data Separation & Verification
 *Proceed only if Phase 2 passes verification.*
 ```bash
-# Split dataset into disjoint train/eval pairs and verify leakage
-python3 scripts/build_smoke_split.py
+# Rebuild splits by connected components (无向图连通分量) and audit train-eval leakage
 bash scripts/server_verify_data.sh
 ```
 

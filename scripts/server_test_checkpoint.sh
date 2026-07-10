@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Environment Pre-check via python helper
-python3 scripts/check_environment_status.py
+python scripts/check_environment_status.py
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 CHECKPOINT_DIR="outputs/qwen3_06b_experiment/checkpoints/checkpoint-epoch-1"
@@ -15,14 +15,14 @@ mkdir -p reports/server outputs/qwen3_06b_experiment/evaluations
 
 # 2. Step 1: Run actual checkpoint round-trip verification
 echo "=== STEP 1: RUNNING CHECKPOINT ROUND-TRIP VERIFICATION ==="
-python3 scripts/server_checkpoint_roundtrip.py \
+python scripts/server_checkpoint_roundtrip.py \
     --model_path "$MODEL_PATH" \
     --eval_file "$EVAL_DATA" \
     --roundtrip_tolerance 1e-3 2>&1 | tee reports/server/checkpoint_roundtrip_log.txt
 
 # 3. Step 2: Run evaluation on smoke checkpoint-1
 echo "=== STEP 2: RUNNING EVALUATION ON SMOKE CHECKPOINT ==="
-python3 evaluate_qurater.py \
+python evaluate_qurater.py \
     --model_path "$MODEL_PATH" \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --eval_file "$EVAL_DATA" \
@@ -32,7 +32,7 @@ python3 evaluate_qurater.py \
 
 # 4. Step 3: Run baseline comparison
 echo "=== STEP 3: COMPARING BASELINE AND SMOKE METRICS ==="
-python3 compare_checkpoints.py \
+python compare_checkpoints.py \
     --eval_dir "outputs/qwen3_06b_experiment/evaluations" \
     --output_md "reports/server/training_comparison.md" \
     --output_json "reports/server/training_comparison.json" \

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Environment Pre-check via python helper
-python3 scripts/check_environment_status.py
+python scripts/check_environment_status.py
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 EVAL_DATA="data/qurating/smoke_eval.jsonl"
@@ -19,12 +19,12 @@ echo "Model Path: $MODEL_PATH" | tee -a "$OUTPUT_FILE"
 echo "----------------------------------------------------------------" | tee -a "$OUTPUT_FILE"
 
 # 1. Save untrained baseline weights and config
-python3 scripts/server_save_baseline.py \
+python scripts/server_save_baseline.py \
     --model_path "$MODEL_PATH" \
     --validation_file "$EVAL_DATA" 2>&1 | tee -a "$OUTPUT_FILE"
 
 # 2. Evaluate checkpoint-0
-python3 evaluate_qurater.py \
+python evaluate_qurater.py \
     --model_path "$MODEL_PATH" \
     --checkpoint_dir "outputs/qwen3_06b_experiment/checkpoint-0" \
     --eval_file "$EVAL_DATA" \

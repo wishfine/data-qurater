@@ -10,8 +10,8 @@ OUTPUT_FILE="reports/server/environment_output.txt"
 echo "=== SERVER ENVIRONMENT CHECK ===" | tee "$OUTPUT_FILE"
 echo "Timestamp: $(date)" | tee -a "$OUTPUT_FILE"
 
-# Execute Python environment verifier block
-python3 -c '
+# Execute Python environment verifier block using the env python
+python -c '
 import sys
 import json
 import os
@@ -30,6 +30,8 @@ report = {
     "peft_version": "N/A",
     "safetensors_version": "N/A",
     "modelscope_version": "N/A",
+    "missing_packages": [],
+    "remediation_commands": [],
     "status": "FAIL"
 }
 
@@ -95,9 +97,14 @@ if report["peft_version"] == "N/A":
 if report["safetensors_version"] == "N/A":
     status = "FAIL"
     failures.append("safetensors missing")
+    
 if report["modelscope_version"] == "N/A":
     status = "FAIL"
     failures.append("modelscope missing")
+    report["missing_packages"].append("modelscope")
+    report["remediation_commands"].append(
+        "python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple"
+    )
 
 report["status"] = status
 
@@ -111,6 +118,13 @@ if not report["conda_env_matches_expected"]:
 
 if status == "FAIL":
     print(f"[CRITICAL ERROR] Hard environment checks failed: {failures}")
+    if "modelscope" in report["missing_packages"]:
+        print("\n=== REMEDIATION INSTRUCTIONS ===")
+        print("ModelScope is missing. Please run the following command to install it:")
+        print("  conda activate agentgym")
+        print("  python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple")
+        print("\n*IMPORTANT*: Do NOT upgrade, downgrade, or reinstall PyTorch during this process!")
+        print("================================")
     sys.exit(1)
 else:
     print("[SUCCESS] Environment check passed. status=PASS")
