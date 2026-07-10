@@ -15,6 +15,7 @@ python -c '
 import sys
 import json
 import os
+import importlib.metadata
 
 report = {
     "python": sys.executable,
@@ -32,6 +33,14 @@ report = {
     "modelscope_version": "N/A",
     "missing_packages": [],
     "remediation_commands": [],
+    "flash_linear_attention_installed": False,
+    "flash_linear_attention_version": None,
+    "fla_core_installed": False,
+    "fla_core_version": None,
+    "fla_import_ok": False,
+    "causal_conv1d_installed": False,
+    "causal_conv1d_version": None,
+    "causal_conv1d_import_ok": False,
     "status": "FAIL"
 }
 
@@ -75,6 +84,42 @@ try:
 except ImportError:
     pass
 
+# Check flash-linear-attention
+try:
+    report["flash_linear_attention_version"] = importlib.metadata.version("flash-linear-attention")
+    report["flash_linear_attention_installed"] = True
+except Exception:
+    pass
+
+# Check fla-core
+try:
+    report["fla_core_version"] = importlib.metadata.version("fla-core")
+    report["fla_core_installed"] = True
+except Exception:
+    pass
+
+# Check fla import
+try:
+    import fla
+    report["fla_import_ok"] = True
+except ImportError:
+    pass
+
+# Check causal-conv1d
+try:
+    report["causal_conv1d_version"] = importlib.metadata.version("causal-conv1d")
+    report["causal_conv1d_installed"] = True
+except Exception:
+    pass
+
+# Check causal-conv1d import
+try:
+    import causal_conv1d
+    from causal_conv1d import causal_conv1d_fn
+    report["causal_conv1d_import_ok"] = True
+except ImportError:
+    pass
+
 # Assert verification conditions
 status = "PASS"
 failures = []
@@ -115,6 +160,15 @@ with open("reports/server/environment_status.json", "w", encoding="utf-8") as f:
 # Print warnings/logs
 if not report["conda_env_matches_expected"]:
     print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"agentgym\".")
+
+# Print warning for optional kernel libraries if missing
+if not report["fla_import_ok"] or not report["causal_conv1d_import_ok"]:
+    print("\n--- WARNING: QWEN3.5 OPTIONAL KERNEL WARNING ---")
+    print(f"  flash-linear-attention import status: {report[\"fla_import_ok\"]} (version: {report[\"flash_linear_attention_version\"]})")
+    print(f"  causal-conv1d import status:          {report[\"causal_conv1d_import_ok\"]} (version: {report[\"causal_conv1d_version\"]})")
+    print("  Note: These libraries are optional for Qwen3-0.6B but will be fast-path")
+    print("        dependencies for Qwen3.5 models. They do not fail the current check.")
+    print("------------------------------------------------\n")
 
 if status == "FAIL":
     print(f"[CRITICAL ERROR] Hard environment checks failed: {failures}")
