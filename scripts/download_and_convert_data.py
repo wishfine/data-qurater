@@ -10,6 +10,9 @@ except ImportError:
     print("Please run: pip install datasets huggingface_hub")
     sys.exit(1)
 
+# Add project root directory to sys.path to enable imports of local packages
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from data.qurating_dataset import OfficialQuRatingDatasetAdapter
 
 def dump_ds_to_jsonl(ds, path):
