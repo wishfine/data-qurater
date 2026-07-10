@@ -19,6 +19,8 @@ import os
 report = {
     "python": sys.executable,
     "conda_env": os.environ.get("CONDA_DEFAULT_ENV", "Unknown"),
+    "expected_conda_env": "agentgym",
+    "conda_env_matches_expected": (os.environ.get("CONDA_DEFAULT_ENV", "") == "agentgym"),
     "torch_version": "N/A",
     "torch_cuda": "N/A",
     "cuda_available": False,
@@ -104,7 +106,7 @@ with open("reports/server/environment_status.json", "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2)
 
 # Print warnings/logs
-if report["conda_env"] != "agentgym":
+if not report["conda_env_matches_expected"]:
     print(f"WARNING: Conda environment name is \"{report[\"conda_env\"]}\", expected \"agentgym\".")
 
 if status == "FAIL":

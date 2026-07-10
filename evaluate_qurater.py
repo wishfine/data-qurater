@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import argparse
+import hashlib
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -13,17 +14,30 @@ from typing import List, Dict, Any
 from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
 from data.qurating_dataset import NormalizedPairwiseDataset
 
-def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
-    y_true = np.array(y_true)
-    y_scores = np.array(y_scores)
-    
+def get_sha256(path):
+    if not os.path.exists(path):
+        return "N/A"
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def compute_auc(y_true: np.ndarray, y_scores: np.ndarray) -> Dict[str, Any]:
     pos_labels = (y_true > 0.5).astype(int)
-    if len(np.unique(pos_labels)) < 2:
-        return 0.5
-        
-    pos_count = np.sum(pos_labels)
+    unique_classes = np.unique(pos_labels)
+    
+    pos_count = int(np.sum(pos_labels))
     neg_count = len(pos_labels) - pos_count
     
+    if len(unique_classes) < 2:
+        return {
+            "auc": None,
+            "auc_status": "UNDEFINED_SINGLE_CLASS",
+            "positive_count": pos_count,
+            "negative_count": neg_count
+        }
+        
     sorted_indices = np.argsort(y_scores)
     pos_labels_sorted = pos_labels[sorted_indices]
     
@@ -31,18 +45,29 @@ def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
     pos_ranks_sum = np.sum(ranks * pos_labels_sorted)
     
     auc = (pos_ranks_sum - (pos_count * (pos_count + 1)) / 2) / (pos_count * neg_count)
-    return float(auc)
+    return {
+        "auc": float(auc),
+        "auc_status": "OK",
+        "positive_count": pos_count,
+        "negative_count": neg_count
+    }
 
-def compute_balanced_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+def compute_balanced_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float | None:
     pos_mask = (y_true == 1)
     neg_mask = (y_true == 0)
     
-    tp_rate = np.mean(y_pred[pos_mask] == 1) if np.sum(pos_mask) > 0 else 0.0
-    tn_rate = np.mean(y_pred[neg_mask] == 0) if np.sum(neg_mask) > 0 else 0.0
+    pos_sum = np.sum(pos_mask)
+    neg_sum = np.sum(neg_mask)
+    
+    if pos_sum == 0 or neg_sum == 0:
+        return None
+        
+    tp_rate = np.mean(y_pred[pos_mask] == 1)
+    tn_rate = np.mean(y_pred[neg_mask] == 0)
     
     return float(0.5 * (tp_rate + tn_rate))
 
-def compute_confidence_buckets(targets: np.ndarray, preds: np.ndarray) -> Dict[str, float | str]:
+def compute_confidence_buckets(targets: np.ndarray, preds: np.ndarray) -> Dict[str, float | None | str]:
     confidences = 2.0 * np.abs(targets - 0.5)
     
     low_mask = (confidences < 0.3)
@@ -51,7 +76,7 @@ def compute_confidence_buckets(targets: np.ndarray, preds: np.ndarray) -> Dict[s
     
     def get_acc(mask):
         if np.sum(mask) == 0:
-            return "N/A"
+            return None
         pred_label = (preds[mask] > 0.5).astype(int)
         gt_label = (targets[mask] > 0.5).astype(int)
         return float(np.mean(pred_label == gt_label))
@@ -62,9 +87,15 @@ def compute_confidence_buckets(targets: np.ndarray, preds: np.ndarray) -> Dict[s
         "high": get_acc(high_mask)
     }
 
-def get_distribution_stats(arr: np.ndarray) -> Dict[str, float]:
+def get_distribution_stats(arr: np.ndarray) -> Dict[str, float | None]:
     if len(arr) == 0:
-        return {}
+        return {
+            "mean": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "median": None
+        }
     return {
         "mean": float(np.mean(arr)),
         "std": float(np.std(arr)),
@@ -72,6 +103,16 @@ def get_distribution_stats(arr: np.ndarray) -> Dict[str, float]:
         "max": float(np.max(arr)),
         "median": float(np.median(arr))
     }
+
+def clean_nan_inf(val: Any) -> Any:
+    if isinstance(val, dict):
+        return {k: clean_nan_inf(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [clean_nan_inf(v) for v in val]
+    elif isinstance(val, float):
+        if np.isnan(val) or np.isinf(val):
+            return None
+    return val
 
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Evaluate QwenQuRater quality predictor")
@@ -85,6 +126,12 @@ def run_evaluation():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+
+    # Verify checkpoint directory configuration exists
+    config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
+    if not os.path.exists(config_path):
+        print(f"[CRITICAL ERROR] qurater_config.json is missing in: {args.checkpoint_dir}")
+        sys.exit(1)
 
     # 1. Load Model and Tokenizer
     print("Loading model and tokenizer...")
@@ -108,23 +155,29 @@ def run_evaluation():
     
     # Load LoRA adapter if present
     adapter_dir = os.path.join(args.checkpoint_dir, "adapter")
-    config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            q_config = json.load(f)
-        if q_config.get("use_lora", False) and os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
+    with open(config_path, "r") as f:
+        q_config = json.load(f)
+    if q_config.get("use_lora", False):
+        if os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
             from peft import PeftModel
             print(f"Loading LoRA adapter from: {adapter_dir} ...")
             model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
+        else:
+            print(f"[CRITICAL ERROR] Adapter config file is missing in {adapter_dir}")
+            sys.exit(1)
             
-    # Load scalar rating head
+    # Load rating head
     heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
     if os.path.exists(heads_path):
         from safetensors.torch import load_file
         model.score.load_state_dict(load_file(heads_path, map_location=device))
     else:
         pt_path = os.path.join(args.checkpoint_dir, "rating_head.pt")
-        model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        if os.path.exists(pt_path):
+            model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        else:
+            print(f"[CRITICAL ERROR] Rating head weights missing in {args.checkpoint_dir}")
+            sys.exit(1)
         
     model.to(device)
     model.eval()
@@ -153,7 +206,6 @@ def run_evaluation():
             confidences = batch["confidences"].to(device)
             domains = batch["domains"]
             
-            # Forward: model returns (batch_size, 4)
             ratings_a = model(input_ids_a, attention_mask_a)
             ratings_b = model(input_ids_b, attention_mask_b)
             
@@ -176,6 +228,10 @@ def run_evaluation():
     metrics_summary = {}
     macro_acc = []
     
+    auc_values = []
+    valid_auc_count = 0
+    undefined_auc_count = 0
+    
     print("\n" + "=" * 50)
     print("QWENQURATER EVALUATION SUMMARY")
     print("=" * 50)
@@ -197,18 +253,28 @@ def run_evaluation():
         macro_acc.append(accuracy)
         
         balanced_acc = compute_balanced_accuracy(gt_label, pred_label)
-        auc_score = compute_auc(targets, preds)
         
+        # Safe AUC Calculation
+        auc_res = compute_auc(targets, preds)
+        if auc_res["auc_status"] == "OK":
+            valid_auc_count += 1
+            auc_values.append(auc_res["auc"])
+        else:
+            undefined_auc_count += 1
+            
         # Calculate distributions
         diff_stats = get_distribution_stats(diffs)
         prob_stats = get_distribution_stats(preds)
         buckets = compute_confidence_buckets(targets, preds)
         
         print(f"Dimension: {dim_name}")
+        auc_val = auc_res["auc"]
+        auc_str = f"{auc_val:.4f}" if auc_val is not None else "N/A (Single Class)"
+        
         print(f"  Accuracy          : {accuracy:.4f}")
-        print(f"  Balanced Accuracy : {balanced_acc:.4f}")
+        print(f"  Balanced Accuracy : {f'{balanced_acc:.4f}' if balanced_acc is not None else 'N/A'}")
         print(f"  BCE Loss          : {bce_loss:.4f}")
-        print(f"  AUC Score         : {auc_score:.4f}")
+        print(f"  AUC Score         : {auc_str}")
         print(f"  Confidence Buckets Acc:")
         print(f"    - Low (<0.3)    : {buckets['low']}")
         print(f"    - Medium        : {buckets['medium']}")
@@ -221,15 +287,58 @@ def run_evaluation():
             "accuracy": accuracy,
             "balanced_accuracy": balanced_acc,
             "bce_loss": bce_loss,
-            "auc": auc_score,
+            "auc": auc_res["auc"],
+            "auc_status": auc_res["auc_status"],
+            "positive_count": auc_res["positive_count"],
+            "negative_count": auc_res["negative_count"],
             "confidence_buckets": buckets,
             "score_diff_distribution": diff_stats,
             "prediction_probability_distribution": prob_stats
         }
 
     mean_macro_acc = float(np.mean(macro_acc)) if macro_acc else 0.0
+    mean_macro_auc = float(np.mean(auc_values)) if auc_values else None
+    
     print(f"Macro Accuracy across Dimensions: {mean_macro_acc:.4f}")
+    print(f"Macro AUC across Dimensions     : {f'{mean_macro_auc:.4f}' if mean_macro_auc is not None else 'N/A'}")
+    
     metrics_summary["macro_accuracy"] = mean_macro_acc
+    metrics_summary["macro_auc"] = mean_macro_auc
+    metrics_summary["valid_auc_dimension_count"] = valid_auc_count
+    metrics_summary["undefined_auc_dimension_count"] = undefined_auc_count
+
+    # 5. Populate verification metadata fields
+    metrics_summary["checkpoint_path"] = args.checkpoint_dir
+    metrics_summary["base_model_path"] = args.model_path
+    
+    # Calculate sha256 for rating head
+    heads_path_safetensors = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
+    if os.path.exists(heads_path_safetensors):
+        metrics_summary["rating_head_file_sha256"] = get_sha256(heads_path_safetensors)
+    else:
+        heads_path_pt = os.path.join(args.checkpoint_dir, "rating_head.pt")
+        if os.path.exists(heads_path_pt):
+            metrics_summary["rating_head_file_sha256"] = get_sha256(heads_path_pt)
+        else:
+            print("[CRITICAL ERROR] Rating head weight file is missing in checkpoint!")
+            sys.exit(1)
+            
+    # Calculate sha256 for adapter
+    adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.bin")
+    if not os.path.exists(adapter_bin):
+        adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.safetensors")
+        
+    if os.path.exists(adapter_bin):
+        metrics_summary["adapter_file_sha256"] = get_sha256(adapter_bin)
+    else:
+        backbone_pt = os.path.join(args.checkpoint_dir, "adapter", "backbone.pt")
+        if os.path.exists(backbone_pt):
+            metrics_summary["adapter_file_sha256"] = get_sha256(backbone_pt)
+        else:
+            print("[CRITICAL ERROR] Backbone/Adapter weight file is missing in checkpoint!")
+            sys.exit(1)
+            
+    metrics_summary["seed"] = q_config.get("seed", 42)
 
     # Leakage/Imbalance warnings
     if mean_macro_acc > 0.85:
@@ -238,11 +347,14 @@ def run_evaluation():
         print("         incorrect label direction, or evaluation bug.")
         print("!" * 80 + "\n")
         
+    # Recursively clean NaNs and Infinities to None
+    cleaned_metrics = clean_nan_inf(metrics_summary)
+    
     if args.output_file:
         os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
         with open(args.output_file, "w", encoding="utf-8") as f:
-            json.dump(metrics_summary, f, indent=2)
-        print(f"\nSaved metrics summary to: {args.output_file}")
+            json.dump(cleaned_metrics, f, indent=2)
+        print(f"\nSaved cleaned metrics summary to: {args.output_file}")
         
     print("=" * 50 + "\n")
 

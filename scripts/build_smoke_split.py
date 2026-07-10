@@ -3,6 +3,7 @@ import sys
 import json
 import random
 import hashlib
+from collections import defaultdict
 
 DIMENSION_NAMES = [
     "writing_style",
@@ -20,8 +21,11 @@ def get_sha256(path):
             h.update(chunk)
     return h.hexdigest()
 
-def build_split(input_path, train_size=8, eval_size=8, seed=42):
-    print("=== PARTITIONING SMOKE TRAIN AND EVAL DATA ===")
+def normalize_text(text):
+    return " ".join(text.strip().split())
+
+def build_split(input_path, raw_train_target=4, raw_eval_target=4, seed=42):
+    print("=== PARTITIONING SMOKE TRAIN AND EVAL DATA (TEXT-DISJOINT) ===")
     random.seed(seed)
     
     if not os.path.exists(input_path):
@@ -35,34 +39,71 @@ def build_split(input_path, train_size=8, eval_size=8, seed=42):
             if line.strip():
                 raw_items.append(json.loads(line))
                 
-    # Each raw item yields 4 normalized pairwise records (one per dimension)
-    # To prevent any data leakage (including same-text cross-dimension leaks),
-    # we split at the level of raw items (text pairs).
-    # Since we need train_size = 8 and eval_size = 8 normalized records,
-    # and each raw item yields 4 dimensions, we need exactly 2 raw items for train
-    # and 2 raw items for eval.
-    needed_raw_train = train_size // 4
-    needed_raw_eval = eval_size // 4
-    
-    if len(raw_items) < (needed_raw_train + needed_raw_eval):
-        raise ValueError(
-            f"[CRITICAL ERROR] Source file has only {len(raw_items)} raw items, "
-            f"which cannot be partitioned into disjoint subsets of sizes {needed_raw_train} and {needed_raw_eval}."
-        )
+    # Normalize texts for each raw item
+    for item in raw_items:
+        item["norm_a"] = normalize_text(item["text_a"])
+        item["norm_b"] = normalize_text(item["text_b"])
         
-    # Shuffle raw items
-    shuffled_indices = list(range(len(raw_items)))
-    random.shuffle(shuffled_indices)
+    # Build Graph: find connected components
+    adj = defaultdict(list)
+    for idx, item in enumerate(raw_items):
+        u = item["norm_a"]
+        v = item["norm_b"]
+        adj[u].append((v, idx))
+        adj[v].append((u, idx))
+        
+    visited_nodes = set()
+    components = []  # list of lists of raw item indices
     
-    train_indices = shuffled_indices[:needed_raw_train]
-    eval_indices = shuffled_indices[needed_raw_train : needed_raw_train + needed_raw_eval]
+    for item in raw_items:
+        start_node = item["norm_a"]
+        if start_node in visited_nodes:
+            continue
+            
+        # BFS to find component
+        comp_item_indices = set()
+        queue = [start_node]
+        visited_nodes.add(start_node)
+        
+        while queue:
+            node = queue.pop(0)
+            for neighbor, item_idx in adj[node]:
+                comp_item_indices.add(item_idx)
+                if neighbor not in visited_nodes:
+                    visited_nodes.add(neighbor)
+                    queue.append(neighbor)
+                    
+        components.append(list(comp_item_indices))
+        
+    print(f"Detected {len(components)} text-connected components.")
     
-    print(f"Selected train raw indices: {train_indices}")
-    print(f"Selected eval raw indices:  {eval_indices}")
+    # Shuffle components
+    random.shuffle(components)
     
-    # Expand indices to normalized pairwise records
+    train_raw_indices = []
+    eval_raw_indices = []
+    unused_components_count = 0
+    
+    # Partition components
+    for comp in components:
+        if len(train_raw_indices) < raw_train_target:
+            train_raw_indices.extend(comp)
+        elif len(eval_raw_indices) < raw_eval_target:
+            eval_raw_indices.extend(comp)
+        else:
+            unused_components_count += 1
+            
+    # Verify count targets
+    if len(train_raw_indices) < raw_train_target or len(eval_raw_indices) < raw_eval_target:
+        print(f"WARNING: Could not achieve target split of {raw_train_target}/{raw_eval_target} raw pairs due to connected component constraints.")
+        print(f"Actual Train raw pairs: {len(train_raw_indices)} | Actual Eval raw pairs: {len(eval_raw_indices)}")
+        if len(train_raw_indices) == 0 or len(eval_raw_indices) == 0:
+            raise ValueError("[CRITICAL ERROR] Partition results in empty train or eval set!")
+            
+    # Expand to normalized records
     train_records = []
-    for idx in train_indices:
+    train_texts = set()
+    for idx in train_raw_indices:
         item = raw_items[idx]
         raw_probs = item["probs"]
         for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
@@ -76,9 +117,12 @@ def build_split(input_path, train_size=8, eval_size=8, seed=42):
                 "confidence": 2.0 * abs(target - 0.5),
                 "domain": "general"
             })
+            train_texts.add(item["norm_a"])
+            train_texts.add(item["norm_b"])
             
     eval_records = []
-    for idx in eval_indices:
+    eval_texts = set()
+    for idx in eval_raw_indices:
         item = raw_items[idx]
         raw_probs = item["probs"]
         for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
@@ -92,21 +136,26 @@ def build_split(input_path, train_size=8, eval_size=8, seed=42):
                 "confidence": 2.0 * abs(target - 0.5),
                 "domain": "general"
             })
+            eval_texts.add(item["norm_a"])
+            eval_texts.add(item["norm_b"])
             
-    # Write train file
+    # Hard assertion of disjoint sets
+    shared_texts = train_texts.intersection(eval_texts)
+    assert len(shared_texts) == 0, f"[CRITICAL ERROR] Text leak detected! Shared texts: {shared_texts}"
+    
+    # Save files
     train_file = "data/qurating/smoke_train.jsonl"
-    os.makedirs(os.path.dirname(train_file), exist_ok=True)
+    eval_file = "data/qurating/smoke_eval.jsonl"
+    
     with open(train_file, "w", encoding="utf-8") as f:
         for r in train_records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             
-    # Write eval file
-    eval_file = "data/qurating/smoke_eval.jsonl"
     with open(eval_file, "w", encoding="utf-8") as f:
         for r in eval_records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             
-    # Generate manifest
+    # Save manifest
     manifest_path = "data/qurating/smoke_split_manifest.json"
     manifest = {
         "seed": seed,
@@ -116,25 +165,30 @@ def build_split(input_path, train_size=8, eval_size=8, seed=42):
         "train_sha256": get_sha256(train_file),
         "eval_file": eval_file,
         "eval_sha256": get_sha256(eval_file),
+        "raw_train_pair_count": len(train_raw_indices),
+        "raw_eval_pair_count": len(eval_raw_indices),
         "train_size": len(train_records),
         "eval_size": len(eval_records),
+        "train_unique_text_count": len(train_texts),
+        "eval_unique_text_count": len(eval_texts),
+        "shared_text_count": len(shared_texts),
+        "single_text_overlap_ratio": len(shared_texts) / max(len(eval_texts), 1),
+        "component_count": len(components),
+        "unused_component_count": unused_components_count,
         "exact_pair_overlap": 0,
         "swapped_pair_overlap": 0
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         
-    print(f"Partition complete.")
-    print(f"Saved {len(train_records)} train records to {train_file}")
-    print(f"Saved {len(eval_records)} eval records to {eval_file}")
-    print(f"Saved manifest to {manifest_path}")
+    print(f"[SUCCESS] Disjoint split complete. Train records: {len(train_records)}, Eval records: {len(eval_records)}")
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, default="data/qurating/smoke_train_source.jsonl")
-    parser.add_argument("--train_size", type=int, default=8)
-    parser.add_argument("--eval_size", type=int, default=8)
+    parser.add_argument("--train_size", type=int, default=4)
+    parser.add_argument("--eval_size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     

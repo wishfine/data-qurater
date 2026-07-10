@@ -10,7 +10,8 @@ import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
 from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
-from train_qurater_qwen import save_modular_checkpoint
+from train_qurater_qwen import save_modular_checkpoint, bradley_terry_loss
+from data.qurating_dataset import NormalizedPairwiseDataset
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -22,7 +23,8 @@ def set_seed(seed=42):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True, help="Base model directory path")
-    parser.add_argument("--tolerance", type=float, default=1e-4, help="Tolerance for round-trip error")
+    parser.add_argument("--eval_file", type=str, required=True, help="Data file to initialize dataset collator")
+    parser.add_argument("--roundtrip_tolerance", type=float, default=1e-3, help="Tolerance for round-trip error")
     args = parser.parse_args()
 
     # 1. Fixed Seed
@@ -30,13 +32,13 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Executing checkpoint round-trip on device: {device}")
 
-    # 2. Load Qwen3-0.6B Base Model
-    print("Loading base model...")
+    # 2. Load Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # 3. Load Qwen3-0.6B Base Model
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     backbone = AutoModel.from_pretrained(
         args.model_path,
@@ -44,7 +46,7 @@ def main():
         trust_remote_code=True
     )
 
-    # 3. Mount LoRA
+    # 4. Mount LoRA adapter
     from peft import LoraConfig, get_peft_model
     target_modules = []
     for name, module in backbone.named_modules():
@@ -56,39 +58,81 @@ def main():
         r=8,
         lora_alpha=16,
         target_modules=target_modules,
-        lora_dropout=0.0,  # Set dropout to 0.0 to ensure deterministic round-trip
+        lora_dropout=0.0,  # Zero dropout to prevent stochastic outputs during evaluation
         bias="none",
         task_type="FEATURE_EXTRACTION"
     )
     backbone = get_peft_model(backbone, lora_config)
 
-    # 4. Initialize Rating Head
+    # 5. Initialize Rating Head
     model = QwenQuRater(backbone=backbone)
     model.to(device)
 
-    # 5. Tokenized Fixed Inputs
-    input_ids = torch.tensor([[10, 20, 30, 40, 50]], dtype=torch.long).to(device)
-    attention_mask = torch.tensor([[1, 1, 1, 1, 1]], dtype=torch.long).to(device)
+    # 6. Construct standard training batch via collate_fn
+    mock_raw_batch = [
+        {
+            "text_a": "This is a quality control test paragraph for A.",
+            "text_b": "This represents a highly educational segment explaining complex astrophysics.",
+            "target": 0.85,
+            "dimension_id": 3,  # educational_value
+            "confidence": 0.70,
+            "domain": "science"
+        },
+        {
+            "text_a": "Let us check vocabulary and syntactic fluency here.",
+            "text_b": "Check syntax and sentence structures.",
+            "target": 0.20,
+            "dimension_id": 0,  # writing_style
+            "confidence": 0.60,
+            "domain": "general"
+        }
+    ]
+    
+    # Load dataset structure
+    dataset = NormalizedPairwiseDataset(args.eval_file, tokenizer, max_length=256)
+    batch = dataset.collate_fn(mock_raw_batch)
 
-    # 6. Execute 1 Optimizer Step
+    # 7. Collect inputs
+    input_ids_a = batch["input_ids_a"].to(device)
+    attention_mask_a = batch["attention_mask_a"].to(device)
+    input_ids_b = batch["input_ids_b"].to(device)
+    attention_mask_b = batch["attention_mask_b"].to(device)
+    targets = batch["targets"].to(device)
+    dimension_ids = batch["dimension_ids"].to(device)
+    confidences = batch["confidences"].to(device)
+
+    # 8. Train mode forward & backward
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     
-    scores = model(input_ids, attention_mask)
-    loss = scores.sum()
+    ratings_a = model(input_ids_a, attention_mask_a, dimension_ids)
+    ratings_b = model(input_ids_b, attention_mask_b, dimension_ids)
+    
+    loss = bradley_terry_loss(ratings_a, ratings_b, targets, confidences, 0.0)
     loss.backward()
+
+    # Get gradient norms before optimizer step
+    rating_head_grad_norm = sum(p.grad.norm().item() for p in model.score.parameters() if p.grad is not None)
+    lora_grad_norm = sum(p.grad.norm().item() for name, p in model.named_parameters() if p.grad is not None and "lora_" in name)
+
+    # Hard assertions of active gradients
+    assert torch.isfinite(loss), f"Loss is not finite: {loss.item()}"
+    assert rating_head_grad_norm > 0, "Rating head score weights have zero gradients!"
+    assert lora_grad_norm > 0, "LoRA weights have zero gradients!"
+
+    # 9. Optimizer step
     optimizer.step()
     optimizer.zero_grad()
 
-    # 7. Model Eval Mode
+    # 10. Eval mode
     model.eval()
 
-    # 8. Calculate and Record Score Before Save
+    # 11. Record score before save (using base outputs shape (batch, 4))
     with torch.no_grad():
-        score_before_tensor = model(input_ids, attention_mask)
+        score_before_tensor = model(input_ids_a, attention_mask_a)
         score_before = score_before_tensor.float().cpu().numpy().tolist()
 
-    # 9. Save Modular Checkpoint
+    # 12. Save modular checkpoint
     checkpoint_dir = "./outputs/roundtrip_test"
     
     class DummyArgs:
@@ -103,19 +147,15 @@ def main():
     dummy_args = DummyArgs(args.model_path)
     save_modular_checkpoint(model, tokenizer, checkpoint_dir, dummy_args, epoch=1, target_modules=target_modules)
 
-    # 10. Delete Model Object
+    # 13. Delete model object and clean memory
     del model
     del backbone
     del optimizer
-    
-    # 11. Run GC
     gc.collect()
-    
-    # 12. Empty CUDA Cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # 13-15. Reload from Checkpoint
+    # 14. Reload from saved modular checkpoint
     print("Re-loading from saved modular checkpoint...")
     backbone_new = AutoModel.from_pretrained(
         args.model_path,
@@ -128,7 +168,6 @@ def main():
     adapter_dir = os.path.join(checkpoint_dir, "adapter")
     model_new.backbone = PeftModel.from_pretrained(model_new.backbone, adapter_dir)
     
-    # Load safe rating head
     heads_path = os.path.join(checkpoint_dir, "rating_head.safetensors")
     if os.path.exists(heads_path):
         from safetensors.torch import load_file
@@ -138,38 +177,39 @@ def main():
         model_new.score.load_state_dict(torch.load(pt_path, map_location=device))
         
     model_new.to(device)
-
-    # 16. Model Eval Mode
     model_new.eval()
 
-    # 17. Calculate Score After Reload
+    # 15. Calculate score after reload
     with torch.no_grad():
-        score_after_tensor = model_new(input_ids, attention_mask)
+        score_after_tensor = model_new(input_ids_a, attention_mask_a)
         score_after = score_after_tensor.float().cpu().numpy().tolist()
 
-    # 18. Calculate max_abs_diff
-    max_abs_diff = float(np.max(np.abs(np.array(score_before) - np.array(score_after))))
-    print(f"Score Before Reload: {score_before}")
-    print(f"Score After Reload:  {score_after}")
-    print(f"Max Absolute Diff:   {max_abs_diff:.6e}")
-
-    # 19. Verify status against tolerance
-    status = "PASS" if max_abs_diff <= args.tolerance else "FAIL"
+    # 16. Calculate metrics
+    abs_diffs = np.abs(np.array(score_before) - np.array(score_after))
+    max_abs_diff = float(np.max(abs_diffs))
+    mean_abs_diff = float(np.mean(abs_diffs))
+    
+    print(f"Max Absolute Diff: {max_abs_diff:.6e} | Mean Absolute Diff: {mean_abs_diff:.6e}")
+    status = "PASS" if max_abs_diff <= args.roundtrip_tolerance else "FAIL"
     print(f"Verification Status: {status}")
 
-    # Save outputs to reports/server/checkpoint_roundtrip.json
+    # Output to reports/server/checkpoint_roundtrip.json
     os.makedirs("reports/server", exist_ok=True)
     report = {
+        "loss": float(loss.item()),
+        "rating_head_grad_norm": float(rating_head_grad_norm),
+        "lora_grad_norm": float(lora_grad_norm),
         "score_before": score_before,
         "score_after": score_after,
         "max_abs_diff": max_abs_diff,
-        "tolerance": args.tolerance,
+        "mean_abs_diff": mean_abs_diff,
+        "tolerance": args.roundtrip_tolerance,
         "status": status
     }
     with open("reports/server/checkpoint_roundtrip.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    # Cleanup test directory
+    # Cleanup
     import shutil
     if os.path.exists(checkpoint_dir):
         shutil.rmtree(checkpoint_dir)

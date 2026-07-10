@@ -4,12 +4,8 @@
 
 set -euo pipefail
 
-# Environment Pre-check
-if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
-    echo "Environment verification has not passed."
-    echo "Run: bash scripts/server_check_env.sh"
-    exit 1
-fi
+# Environment Pre-check via python helper
+python3 scripts/check_environment_status.py
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 mkdir -p reports/server

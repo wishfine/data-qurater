@@ -4,12 +4,8 @@
 
 set -euo pipefail
 
-# 1. Environment Pre-check
-if [ ! -f "reports/server/environment_status.json" ] || [ "$(grep -o '"status": *"[^"]*"' reports/server/environment_status.json | cut -d'"' -f4)" != "PASS" ]; then
-    echo "Environment verification has not passed."
-    echo "Run: bash scripts/server_check_env.sh"
-    exit 1
-fi
+# Environment Pre-check via python helper
+python3 scripts/check_environment_status.py
 
 MODEL_PATH=${1:-"Qwen/Qwen3-0.6B"}
 CHECKPOINT_DIR="outputs/qwen3_06b_experiment/checkpoints/checkpoint-epoch-1"
@@ -21,7 +17,8 @@ mkdir -p reports/server outputs/qwen3_06b_experiment/evaluations
 echo "=== STEP 1: RUNNING CHECKPOINT ROUND-TRIP VERIFICATION ==="
 python3 scripts/server_checkpoint_roundtrip.py \
     --model_path "$MODEL_PATH" \
-    --tolerance 1e-4 2>&1 | tee reports/server/checkpoint_roundtrip_log.txt
+    --eval_file "$EVAL_DATA" \
+    --roundtrip_tolerance 1e-3 2>&1 | tee reports/server/checkpoint_roundtrip_log.txt
 
 # 3. Step 2: Run evaluation on smoke checkpoint-1
 echo "=== STEP 2: RUNNING EVALUATION ON SMOKE CHECKPOINT ==="

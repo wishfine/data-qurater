@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# Environment Pre-check via python helper
+python3 scripts/check_environment_status.py
+
 mkdir -p reports/server outputs
 
 echo "=== STARTING MODELSCOPE DOWNLOAD ==="
