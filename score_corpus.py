@@ -76,7 +76,7 @@ def main():
     heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
     if os.path.exists(heads_path):
         from safetensors.torch import load_file
-        model.score.load_state_dict(load_file(heads_path, map_location=device))
+        model.score.load_state_dict(load_file(heads_path, device=device))
     else:
         pt_path = os.path.join(args.checkpoint_dir, "rating_head.pt")
         if os.path.exists(pt_path):
