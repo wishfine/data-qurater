@@ -8,7 +8,7 @@ from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from typing import List, Dict, Any
 
-from models.qwen_qurater import QwenQuRater, QUALITY_DIMENSIONS
+from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
 
 def chunk_text(text: str, tokenizer, max_tokens: int = 512) -> List[Dict[str, Any]]:
     """Split text into non-overlapping token windows of up to max_tokens."""
@@ -43,7 +43,13 @@ def main():
 
     # 1. Load Model & Tokenizer
     print("Loading model and tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    tokenizer_dir = os.path.join(args.checkpoint_dir, "tokenizer")
+    if os.path.exists(tokenizer_dir):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, trust_remote_code=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+        
+    tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -53,26 +59,28 @@ def main():
         trust_remote_code=True
     )
     
-    model = QwenQuRater(
-        backbone=backbone,
-        pooling_type=args.pooling_type,
-        padding_side=tokenizer.padding_side
-    )
+    model = QwenQuRater(backbone=backbone)
     
-    # Load LoRA adapter if use_lora is true in config metadata
+    # Load LoRA adapter if present under adapter/
+    adapter_dir = os.path.join(args.checkpoint_dir, "adapter")
     config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             q_config = json.load(f)
-        if q_config.get("use_lora", False):
+        if q_config.get("use_lora", False) and os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
             from peft import PeftModel
-            print(f"Loading LoRA adapter from: {args.checkpoint_dir} ...")
-            model.backbone = PeftModel.from_pretrained(model.backbone, args.checkpoint_dir)
+            print(f"Loading LoRA adapter from: {adapter_dir} ...")
+            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
             
-    # Load scalar heads
-    heads_path = os.path.join(args.checkpoint_dir, "rating_heads.pt")
-    model.rating_heads.load_state_dict(torch.load(heads_path, map_location=device))
-    
+    # Load scalar head
+    heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
+    if os.path.exists(heads_path):
+        from safetensors.torch import load_file
+        model.score.load_state_dict(load_file(heads_path, map_location=device))
+    else:
+        pt_path = os.path.join(args.checkpoint_dir, "rating_head.pt")
+        model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        
     model.to(device)
     model.eval()
 
@@ -112,24 +120,28 @@ def main():
                     return_tensors="pt"
                 ).to(device)
                 
+                # Forward returns (num_chunks, 4)
                 ratings = model(encodings["input_ids"], encodings["attention_mask"])
                 
             chunk_ratings = []
             for i in range(len(chunks)):
-                ratings_i = {dim: float(ratings[dim][i].cpu().float().item()) for dim in QUALITY_DIMENSIONS}
+                ratings_i = {
+                    dim_name: float(ratings[i, dim_idx].cpu().float().item())
+                    for dim_idx, dim_name in enumerate(DIMENSION_NAMES)
+                }
                 chunk_ratings.append(ratings_i)
                 
             # Length-weighted aggregation of scores
-            weighted_scores = {dim: 0.0 for dim in QUALITY_DIMENSIONS}
+            weighted_scores = {dim_name: 0.0 for dim_name in DIMENSION_NAMES}
             total_weight = sum(c["length"] for c in chunks)
             
             for chunk, scores in zip(chunks, chunk_ratings):
                 weight = chunk["length"]
-                for dim in QUALITY_DIMENSIONS:
-                    weighted_scores[dim] += scores[dim] * weight
+                for dim_name in DIMENSION_NAMES:
+                    weighted_scores[dim_name] += scores[dim_name] * weight
                     
-            for dim in QUALITY_DIMENSIONS:
-                weighted_scores[dim] = weighted_scores[dim] / total_weight
+            for dim_name in DIMENSION_NAMES:
+                weighted_scores[dim_name] = weighted_scores[dim_name] / total_weight
                 
             item["qurating_scores"] = weighted_scores
             item["qurating_chunks"] = chunk_ratings

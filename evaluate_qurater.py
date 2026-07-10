@@ -10,15 +10,14 @@ from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from typing import List, Dict, Any
 
-from models.qwen_qurater import QwenQuRater, QUALITY_DIMENSIONS
-from data.qurating_dataset import PairwiseDataset
+from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
+from data.qurating_dataset import NormalizedPairwiseDataset
 
 def compute_auc(y_true: List[float], y_scores: List[float]) -> float:
     """Compute Area Under ROC Curve using rank sums (Wilcoxon-Mann-Whitney formula)"""
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
     
-    # Binarize ground truth labels around 0.5
     pos_labels = (y_true > 0.5).astype(int)
     if len(np.unique(pos_labels)) < 2:
         return 0.5
@@ -51,7 +50,13 @@ def run_evaluation():
 
     # 1. Load Model and Tokenizer
     print("Loading model and tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    tokenizer_dir = os.path.join(args.checkpoint_dir, "tokenizer")
+    if os.path.exists(tokenizer_dir):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, trust_remote_code=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+        
+    tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -61,58 +66,57 @@ def run_evaluation():
         trust_remote_code=True
     )
     
-    model = QwenQuRater(
-        backbone=backbone,
-        pooling_type=args.pooling_type,
-        padding_side=tokenizer.padding_side
-    )
+    model = QwenQuRater(backbone=backbone)
     
-    # Load LoRA adapter if use_lora is true in metadata config
+    # Load LoRA adapter if present under adapter/
+    adapter_dir = os.path.join(args.checkpoint_dir, "adapter")
     config_path = os.path.join(args.checkpoint_dir, "qurater_config.json")
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             q_config = json.load(f)
-        if q_config.get("use_lora", False):
+        if q_config.get("use_lora", False) and os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
             from peft import PeftModel
-            print(f"Loading LoRA adapter from: {args.checkpoint_dir} ...")
-            model.backbone = PeftModel.from_pretrained(model.backbone, args.checkpoint_dir)
+            print(f"Loading LoRA adapter from: {adapter_dir} ...")
+            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
             
-    # Load scalar heads
-    heads_path = os.path.join(args.checkpoint_dir, "rating_heads.pt")
-    model.rating_heads.load_state_dict(torch.load(heads_path, map_location=device))
-    
+    # Load scalar heads (rating_head.safetensors)
+    heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
+    if os.path.exists(heads_path):
+        from safetensors.torch import load_file
+        model.score.load_state_dict(load_file(heads_path, map_location=device))
+    else:
+        pt_path = os.path.join(args.checkpoint_dir, "rating_head.pt")
+        model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        
     model.to(device)
     model.eval()
 
     # 2. Load Evaluation Dataset
     print(f"Loading dataset from: {args.eval_file}")
-    dataset = PairwiseDataset(args.eval_file, tokenizer, args.max_length)
+    dataset = NormalizedPairwiseDataset(args.eval_file, tokenizer, args.max_length)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=dataset.collate_fn)
 
     # 3. Running evaluation predictions
-    all_targets = {dim: [] for dim in QUALITY_DIMENSIONS}
-    all_preds = {dim: [] for dim in QUALITY_DIMENSIONS}
-    all_diffs = {dim: [] for dim in QUALITY_DIMENSIONS}
-    swap_errors = {dim: [] for dim in QUALITY_DIMENSIONS}
+    all_targets = {dim_idx: [] for dim_idx in range(4)}
+    all_preds = {dim_idx: [] for dim_idx in range(4)}
+    all_diffs = {dim_idx: [] for dim_idx in range(4)}
+    swap_errors = {dim_idx: [] for dim_idx in range(4)}
     
     domain_data = []
-    with open(args.eval_file, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                item = json.loads(line)
-                domain_data.append(item.get("domain", "general"))
 
     print("Evaluating samples...")
-    idx = 0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Predicting"):
             input_ids_a = batch["input_ids_a"].to(device)
             attention_mask_a = batch["attention_mask_a"].to(device)
             input_ids_b = batch["input_ids_b"].to(device)
             attention_mask_b = batch["attention_mask_b"].to(device)
-            prob_labels = {k: v.to(device) for k, v in batch["prob_labels"].items()}
+            targets = batch["targets"].to(device)
+            dimension_ids = batch["dimension_ids"].to(device)
+            confidences = batch["confidences"].to(device)
+            domains = batch["domains"]
             
-            # Predict original (A, B)
+            # Forward: model returns (batch_size, 4)
             ratings_a = model(input_ids_a, attention_mask_a)
             ratings_b = model(input_ids_b, attention_mask_b)
             
@@ -120,30 +124,30 @@ def run_evaluation():
             ratings_a_swap = model(input_ids_b, attention_mask_b)
             ratings_b_swap = model(input_ids_a, attention_mask_a)
             
-            batch_size = input_ids_a.size(0)
-            
-            for dim in QUALITY_DIMENSIONS:
-                r_a = ratings_a[dim].cpu().float().numpy()
-                r_b = ratings_b[dim].cpu().float().numpy()
-                gt = prob_labels[dim].cpu().float().numpy()
+            for i in range(input_ids_a.size(0)):
+                dim_idx = int(dimension_ids[i].item())
                 
-                logits = r_b - r_a
-                p_pred = 1.0 / (1.0 + np.exp(-logits))
+                # Extract score for specific dimension
+                r_a = ratings_a[i, dim_idx].cpu().float().item()
+                r_b = ratings_b[i, dim_idx].cpu().float().item()
+                gt = targets[i].cpu().float().item()
                 
-                r_a_swap = ratings_a_swap[dim].cpu().float().numpy()
-                r_b_swap = ratings_b_swap[dim].cpu().float().numpy()
-                logits_swap = r_b_swap - r_a_swap
-                p_pred_swap = 1.0 / (1.0 + np.exp(-logits_swap))
+                logit = r_b - r_a
+                p_pred = 1.0 / (1.0 + np.exp(-logit))
                 
-                swap_sum = p_pred + p_pred_swap
-                swap_err = np.abs(swap_sum - 1.0)
+                # Swap consistency
+                r_a_swap = ratings_a_swap[i, dim_idx].cpu().float().item()
+                r_b_swap = ratings_b_swap[i, dim_idx].cpu().float().item()
+                logit_swap = r_b_swap - r_a_swap
+                p_pred_swap = 1.0 / (1.0 + np.exp(-logit_swap))
                 
-                all_targets[dim].extend(gt.tolist())
-                all_preds[dim].extend(p_pred.tolist())
-                all_diffs[dim].extend(logits.tolist())
-                swap_errors[dim].extend(swap_err.tolist())
+                swap_err = np.abs(p_pred + p_pred_swap - 1.0)
                 
-            idx += batch_size
+                all_targets[dim_idx].append(gt)
+                all_preds[dim_idx].append(p_pred)
+                all_diffs[dim_idx].append(logit)
+                swap_errors[dim_idx].append(swap_err)
+                domain_data.append(domains[i])
 
     # 4. Compiling statistics
     metrics_summary = {}
@@ -153,12 +157,15 @@ def run_evaluation():
     print("QWENQURATER EVALUATION SUMMARY")
     print("=" * 50)
     
-    for dim in QUALITY_DIMENSIONS:
-        targets = np.array(all_targets[dim])
-        preds = np.array(all_preds[dim])
-        diffs = np.array(all_diffs[dim])
-        swap_errs = np.array(swap_errors[dim])
+    for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
+        targets = np.array(all_targets[dim_idx])
+        preds = np.array(all_preds[dim_idx])
+        diffs = np.array(all_diffs[dim_idx])
+        swap_errs = np.array(swap_errors[dim_idx])
         
+        if len(targets) == 0:
+            continue
+            
         bce_loss = float(-np.mean(targets * np.log(np.clip(preds, 1e-7, 1-1e-7)) + (1.0 - targets) * np.log(np.clip(1.0 - preds, 1e-7, 1-1e-7))))
         
         pred_label = (preds > 0.5).astype(int)
@@ -172,7 +179,7 @@ def run_evaluation():
         std_diff = float(np.std(diffs))
         mean_swap_err = float(np.mean(swap_errs))
         
-        print(f"Dimension: {dim}")
+        print(f"Dimension: {dim_name}")
         print(f"  Accuracy: {accuracy:.4f}")
         print(f"  BCE Loss: {bce_loss:.4f}")
         print(f"  AUC Score: {auc_score:.4f}")
@@ -181,7 +188,7 @@ def run_evaluation():
         print(f"  Swap Consistency Error: {mean_swap_err:.4e}")
         print("-" * 50)
         
-        metrics_summary[dim] = {
+        metrics_summary[dim_name] = {
             "accuracy": accuracy,
             "bce_loss": bce_loss,
             "auc": auc_score,
@@ -191,31 +198,9 @@ def run_evaluation():
             "swap_consistency_error": mean_swap_err
         }
 
-    mean_macro_acc = float(np.mean(macro_acc))
-    print(f"Macro Accuracy across 4 Dimensions: {mean_macro_acc:.4f}")
+    mean_macro_acc = float(np.mean(macro_acc)) if macro_acc else 0.0
+    print(f"Macro Accuracy across Dimensions: {mean_macro_acc:.4f}")
     metrics_summary["macro_accuracy"] = mean_macro_acc
-
-    unique_domains = list(set(domain_data))
-    domain_accuracies = {}
-    
-    if len(unique_domains) > 1:
-        print("\nDomain Specific Accuracies (Macro):")
-        for dom in unique_domains:
-            dom_indices = [i for i, d in enumerate(domain_data) if d == dom]
-            dom_accs = []
-            for dim in QUALITY_DIMENSIONS:
-                dim_targets = np.array(all_targets[dim])[dom_indices]
-                dim_preds = np.array(all_preds[dim])[dom_indices]
-                
-                pred_label = (dim_preds > 0.5).astype(int)
-                gt_label = (dim_targets > 0.5).astype(int)
-                dom_accs.append(np.mean(pred_label == gt_label))
-            
-            mean_dom_acc = float(np.mean(dom_accs))
-            print(f"  {dom}: {mean_dom_acc:.4f}")
-            domain_accuracies[dom] = mean_dom_acc
-            
-        metrics_summary["domain_accuracies"] = domain_accuracies
         
     if args.output_file:
         with open(args.output_file, "w", encoding="utf-8") as f:
