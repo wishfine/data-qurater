@@ -157,7 +157,8 @@ def run_evaluation():
     adapter_dir = os.path.join(args.checkpoint_dir, "adapter")
     with open(config_path, "r") as f:
         q_config = json.load(f)
-    if q_config.get("use_lora", False):
+    use_lora = q_config.get("use_lora", False)
+    if use_lora:
         if os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
             from peft import PeftModel
             print(f"Loading LoRA adapter from: {adapter_dir} ...")
@@ -324,19 +325,22 @@ def run_evaluation():
             sys.exit(1)
             
     # Calculate sha256 for adapter
-    adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.bin")
-    if not os.path.exists(adapter_bin):
-        adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.safetensors")
-        
-    if os.path.exists(adapter_bin):
-        metrics_summary["adapter_file_sha256"] = get_sha256(adapter_bin)
-    else:
-        backbone_pt = os.path.join(args.checkpoint_dir, "adapter", "backbone.pt")
-        if os.path.exists(backbone_pt):
-            metrics_summary["adapter_file_sha256"] = get_sha256(backbone_pt)
+    if use_lora:
+        adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.bin")
+        if not os.path.exists(adapter_bin):
+            adapter_bin = os.path.join(args.checkpoint_dir, "adapter", "adapter_model.safetensors")
+            
+        if os.path.exists(adapter_bin):
+            metrics_summary["adapter_file_sha256"] = get_sha256(adapter_bin)
         else:
-            print("[CRITICAL ERROR] Backbone/Adapter weight file is missing in checkpoint!")
-            sys.exit(1)
+            backbone_pt = os.path.join(args.checkpoint_dir, "adapter", "backbone.pt")
+            if os.path.exists(backbone_pt):
+                metrics_summary["adapter_file_sha256"] = get_sha256(backbone_pt)
+            else:
+                print("[CRITICAL ERROR] Backbone/Adapter weight file is missing in checkpoint!")
+                sys.exit(1)
+    else:
+        metrics_summary["adapter_file_sha256"] = "N/A"
             
     metrics_summary["seed"] = q_config.get("seed", 42)
 

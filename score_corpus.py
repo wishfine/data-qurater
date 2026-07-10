@@ -72,14 +72,18 @@ def main():
             print(f"Loading LoRA adapter from: {adapter_dir} ...")
             model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
             
-    # Load scalar head
+    # Load rating head
     heads_path = os.path.join(args.checkpoint_dir, "rating_head.safetensors")
     if os.path.exists(heads_path):
         from safetensors.torch import load_file
         model.score.load_state_dict(load_file(heads_path, map_location=device))
     else:
         pt_path = os.path.join(args.checkpoint_dir, "rating_head.pt")
-        model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        if os.path.exists(pt_path):
+            model.score.load_state_dict(torch.load(pt_path, map_location=device))
+        else:
+            print(f"[CRITICAL ERROR] Rating head weights missing in {args.checkpoint_dir}")
+            sys.exit(1)
         
     model.to(device)
     model.eval()

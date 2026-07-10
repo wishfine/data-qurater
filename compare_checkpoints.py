@@ -13,10 +13,10 @@ def load_metrics(path):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare checkpoints and plot learning progress")
-    parser.add_argument("--eval_dir", type=str, default="outputs/qwen3_06b_experiment/evaluations")
+    parser.add_argument("--eval_dir", type=str, default="outputs/qwen35_4b_experiment/evaluations")
     parser.add_argument("--output_md", type=str, default="reports/server/training_comparison.md")
     parser.add_argument("--output_json", type=str, default="reports/server/training_comparison.json")
-    parser.add_argument("--learning_curve", type=str, default="outputs/qwen3_06b_experiment/evaluations/learning_curve.csv")
+    parser.add_argument("--learning_curve", type=str, default="outputs/qwen35_4b_experiment/evaluations/learning_curve.csv")
     args = parser.parse_args()
 
     # Locate evaluation JSONs
