@@ -12,6 +12,16 @@ MODEL_PATH=${1:-"$(cat outputs/model_path.txt 2>/dev/null || echo 'Qwen/Qwen3.5-
 TRAIN_FILE=${2:-"data/qurating/train.jsonl"}
 VAL_FILE=${3:-"data/qurating/eval.jsonl"}
 CONFIG_FILE=${4:-"configs/qwen3_06b_train.json"}
+RESUME_FROM_CHECKPOINT=${5:-""}
+
+RESUME_ARGS=()
+if [ -n "$RESUME_FROM_CHECKPOINT" ]; then
+    if [ ! -d "$RESUME_FROM_CHECKPOINT" ]; then
+        echo "[ERROR] Resume checkpoint directory does not exist: $RESUME_FROM_CHECKPOINT" >&2
+        exit 1
+    fi
+    RESUME_ARGS=(--resume_from_checkpoint "$RESUME_FROM_CHECKPOINT")
+fi
 
 mkdir -p reports/server outputs/qwen35_4b_experiment/evaluations
 OUTPUT_FILE="reports/server/full_train_output.txt"
@@ -28,6 +38,11 @@ echo "Model Path : $MODEL_PATH" | tee -a "$OUTPUT_FILE"
 echo "Train File : $TRAIN_FILE" | tee -a "$OUTPUT_FILE"
 echo "Val File   : $VAL_FILE" | tee -a "$OUTPUT_FILE"
 echo "Config File: $CONFIG_FILE" | tee -a "$OUTPUT_FILE"
+if [ -n "$RESUME_FROM_CHECKPOINT" ]; then
+    echo "Resume From: $RESUME_FROM_CHECKPOINT" | tee -a "$OUTPUT_FILE"
+else
+    echo "Resume From: <fresh run>" | tee -a "$OUTPUT_FILE"
+fi
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
 
 # Run 3 epochs with batch_size=4 and grad_accum=4 on 2 GPUs.
@@ -48,7 +63,8 @@ torchrun --nproc_per_node=2 train_qurater_qwen.py \
     --confidence_threshold 0.5 \
     --max_train_samples 64000 \
     --max_eval_samples 5000 \
-    --seed 42 2>&1 | tee -a "$OUTPUT_FILE"
+    --seed 42 \
+    "${RESUME_ARGS[@]}" 2>&1 | tee -a "$OUTPUT_FILE"
 
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
 echo "=== RUNNING FINAL SINGLE-PROCESS EVALUATION ===" | tee -a "$OUTPUT_FILE"
