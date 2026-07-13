@@ -44,6 +44,12 @@ def bradley_terry_loss(
         
     return per_sample_loss[valid_mask].mean()
 
+def should_flush_gradient_accumulation(micro_step: int, gradient_accumulation_steps: int) -> bool:
+    """Return whether an epoch ends with gradients that have not been stepped."""
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive")
+    return micro_step > 0 and micro_step % gradient_accumulation_steps != 0
+
 def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, target_modules=None, optimizer=None, scheduler=None):
     os.makedirs(checkpoint_dir, exist_ok=True)
     
@@ -179,7 +185,7 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
                 r_a = ratings_a[i, dim_idx].cpu().float().item()
                 r_b = ratings_b[i, dim_idx].cpu().float().item()
                 gt = targets[i].cpu().float().item()
-                
+
                 logit = r_b - r_a
                 p_pred = 1.0 / (1.0 + np.exp(-logit))
                 
@@ -284,13 +290,16 @@ def parse_args():
     parser.add_argument("--max_train_samples", type=int, default=None, help="Limit number of training samples")
     parser.add_argument("--max_eval_samples", type=int, default=None, help="Limit number of evaluation samples")
     parser.add_argument("--use_lora", action="store_true", default=True, help="Use LoRA")
+    parser.add_argument("--no_lora", action="store_false", dest="use_lora", help="Disable LoRA")
     parser.add_argument("--use_4bit", action="store_true", default=False, help="Quantize backbone model to 4-bit NF4")
     parser.add_argument("--bf16", action="store_true", default=True, help="Use bfloat16 precision")
+    parser.add_argument("--no_bf16", action="store_false", dest="bf16", help="Disable bfloat16 precision")
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False, help="Enable gradient checkpointing")
     parser.add_argument("--confidence_threshold", type=float, default=0.5, help="Confidence threshold filter")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--max_optimizer_steps", type=int, default=None, help="Stop training after reaching this number of optimizer steps")
+    parser.add_argument("--evaluate_before_training", action="store_true", help="Evaluate checkpoint-0 before training begins")
     return parser.parse_args()
 
 def main():
@@ -488,8 +497,13 @@ def main():
     if is_main_process:
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
         
-    if val_dataset is not None:
-        evaluate_model(model, val_dataset, device, args, "epoch_0.0")
+    if val_dataset is not None and args.evaluate_before_training:
+        if is_distributed:
+            torch.distributed.barrier()
+        if is_main_process:
+            evaluate_model(model, val_dataset, device, args, "epoch_0.0")
+        if is_distributed:
+            torch.distributed.barrier()
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
@@ -517,7 +531,6 @@ def main():
 
     # 6. Training Loop
     optimizer_step = 0
-    micro_step = 0
     stop_training = False
     
     for epoch in range(start_epoch, args.num_train_epochs):
@@ -526,6 +539,7 @@ def main():
             
         model.train()
         epoch_loss = 0.0
+        micro_step = 0
         
         step_times = []
         forward_times = []
@@ -596,17 +610,21 @@ def main():
                     print(f"  [STEP] micro_step: {micro_step} | optimizer_step: {optimizer_step}")
                 
                 # Check for 0.25-epoch intervals (excluding full epochs, which are handled at the end of the epoch loop)
-                steps_per_epoch = len(train_loader) // args.gradient_accumulation_steps
+                steps_per_epoch = max(1, len(train_loader) // args.gradient_accumulation_steps)
                 quarter_epoch_steps = max(1, steps_per_epoch // 4)
                 if optimizer_step > 0 and (optimizer_step % quarter_epoch_steps == 0) and (optimizer_step % steps_per_epoch != 0):
                     epoch_decimal = optimizer_step / steps_per_epoch
                     epoch_name = f"epoch_{epoch_decimal:.2f}"
+                    if is_distributed:
+                        torch.distributed.barrier()
                     if is_main_process:
                         print(f"\n[INTERVAL] Reached {epoch_name} (step {optimizer_step}). Saving checkpoint and evaluating...")
                         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{epoch_name.replace('_', '-')}")
                         save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
                         if val_dataset is not None:
                             evaluate_model(model, val_dataset, device, args, epoch_name)
+                    if is_distributed:
+                        torch.distributed.barrier()
                             
                 # Periodic safety checkpoints every 5000 steps to prevent loss of progress
                 if optimizer_step > 0 and (optimizer_step % 5000 == 0):
@@ -636,14 +654,30 @@ def main():
                 if torch.cuda.is_available():
                     print(f"  GPU Max Memory Allocated: {torch.cuda.max_memory_allocated(0)/1024**3:.2f} GB")
                     
+        # Step once for the final partial accumulation window, then start the next epoch fresh.
+        if should_flush_gradient_accumulation(micro_step, args.gradient_accumulation_steps):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            optimizer_step += 1
+            if is_main_process:
+                print(f"  [EPOCH END STEP] micro_step: {micro_step} | optimizer_step: {optimizer_step} (flushed remainder gradients)")
+            if args.max_optimizer_steps is not None and optimizer_step >= args.max_optimizer_steps:
+                stop_training = True
+
         # Epoch checkpoint
         avg_loss = epoch_loss / len(train_loader)
+        if is_distributed:
+            torch.distributed.barrier()
         if is_main_process:
             print(f"\nEpoch {epoch+1} Complete. Avg Pairwise loss: {avg_loss:.4f}")
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
             save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler)
             if val_dataset is not None:
                 evaluate_model(model, val_dataset, device, args, f"epoch_{float(epoch+1)}")
+        if is_distributed:
+            torch.distributed.barrier()
             
         if stop_training:
             if is_main_process:

@@ -1,11 +1,11 @@
 {
   "seed": 42,
   "source_file": "data/qurating/smoke_train_source.jsonl",
-  "source_sha256": "d407fae4815482b15fa58c4fea13018b60325ae8dc9b016c7f2e383f7a8af0ce",
+  "source_sha256": "53bd3574d4106400d24f70c80ed2c783af2a7d5c8699ac2ab917aca401ff7601",
   "train_file": "data/qurating/smoke_train.jsonl",
-  "train_sha256": "8a968bd9e0d6fe9c7a1beaa6d09f4b6b9e54cb2337ac9e84dab6f8d75d320799",
+  "train_sha256": "a41f971d9af436b1b03d50b76df912de79c29f31c00c21b48e3cc110b48d2dc8",
   "eval_file": "data/qurating/smoke_eval.jsonl",
-  "eval_sha256": "b9e72d46d915990e4c72b71e6816c0ccc0c83a3571ba4ad5ff8ec40fbe55caa0",
+  "eval_sha256": "b62f20cda94339b13891e564bf0496f5c21297ceec5fc215ae997ca6bcc74152",
   "raw_train_pair_count": 4,
   "raw_eval_pair_count": 4,
   "train_size": 16,
@@ -14,8 +14,8 @@
   "eval_unique_text_count": 8,
   "shared_text_count": 0,
   "single_text_overlap_ratio": 0.0,
-  "component_count": 8,
-  "unused_component_count": 0,
+  "component_count": 12,
+  "unused_component_count": 4,
   "exact_pair_overlap": 0,
   "swapped_pair_overlap": 0
 }

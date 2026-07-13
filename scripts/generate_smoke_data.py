@@ -1,63 +1,63 @@
-import os
+"""Create a deterministic, text-disjoint QuRating smoke dataset.
+
+The generated source file uses the raw pairwise ``probs`` schema.  The same
+connected-component splitter used on the server then creates normalized train
+and evaluation files, so the checked-in smoke data also passes leakage audits.
+"""
+from __future__ import annotations
+
 import json
+import os
 import random
 
-def generate_smoke_data():
-    output_dir = "data/qurating"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 4 dimensions of quality rating
-    # 0: writing_style, 1: required_expertise, 2: facts_and_trivia, 3: educational_value
-    dimensions = [0, 1, 2, 3]
-    domains = ["general", "academic", "creative", "code"]
-    
-    texts_pool = [
-        "Python is a high-level programming language known for its readability and clean syntax.",
-        "The quick brown fox jumps over the lazy dog in a classical pangram sequence.",
-        "Quantum computing operates on qubits which utilize superposition and entanglement principles.",
-        "To cook a perfect omelette, whisk eggs thoroughly and cook over low heat with melted butter.",
-        "Artificial Intelligence is rapidly advancing across various sectors including medicine and finance.",
-        "The Great Wall of China is one of the world's most famous historical monuments.",
-        "Machine learning models require robust preprocessing pipelines to clean features and scale weights.",
-        "Shakespeare was a prominent English playwright who wrote famous tragedies like Hamlet and Macbeth.",
-        "Deep learning leverages multi-layered neural networks to approximate complex mathematical functions.",
-        "Proper hydration and sleep are essential pillars for maintaining optimal biological health."
-    ]
-    
-    def create_records(num_records):
-        records = []
-        for _ in range(num_records):
-            text_a = random.choice(texts_pool)
-            # Make sure text_b is different from text_a
-            text_b = random.choice(texts_pool)
-            while text_b == text_a:
-                text_b = random.choice(texts_pool)
-                
-            records.append({
-                "text_a": text_a,
-                "text_b": text_b,
-                "target": round(random.uniform(0.0, 1.0), 4),
-                "dimension_id": random.choice(dimensions),
-                "confidence": round(random.uniform(0.1, 1.0), 4),
-                "domain": random.choice(domains)
-            })
-        return records
+from build_smoke_split import build_split
 
-    # Write smoke_train.jsonl (64 samples)
-    smoke_train_path = os.path.join(output_dir, "smoke_train.jsonl")
-    train_records = create_records(64)
-    with open(smoke_train_path, "w", encoding="utf-8") as f:
-        for r in train_records:
-            f.write(json.dumps(r) + "\n")
-    print(f"Generated {smoke_train_path} with 64 records.")
-    
-    # Write smoke_eval.jsonl (16 samples)
-    smoke_eval_path = os.path.join(output_dir, "smoke_eval.jsonl")
-    eval_records = create_records(16)
-    with open(smoke_eval_path, "w", encoding="utf-8") as f:
-        for r in eval_records:
-            f.write(json.dumps(r) + "\n")
-    print(f"Generated {smoke_eval_path} with 16 records.")
+
+def generate_smoke_data(output_dir: str = "data/qurating", seed: int = 42) -> None:
+    random_generator = random.Random(seed)
+    os.makedirs(output_dir, exist_ok=True)
+
+    source_path = os.path.join(output_dir, "smoke_train_source.jsonl")
+    train_path = os.path.join(output_dir, "smoke_train.jsonl")
+    eval_path = os.path.join(output_dir, "smoke_eval.jsonl")
+    manifest_path = os.path.join(output_dir, "smoke_split_manifest.json")
+
+    records = []
+    for index in range(12):
+        text_a = (
+            f"Smoke example {index} is a fragmented note with little explanation "
+            "and no supporting detail."
+        )
+        text_b = (
+            f"Smoke example {index} explains a scientific concept with clear structure, "
+            "specific factual detail, and an educational takeaway."
+        )
+        records.append({
+            "text_a": text_a,
+            "text_b": text_b,
+            "probs": {
+                "writing_style": round(random_generator.uniform(0.75, 0.95), 4),
+                "required_expertise": round(random_generator.uniform(0.55, 0.8), 4),
+                "facts_trivia": round(random_generator.uniform(0.65, 0.9), 4),
+                "educational_value": round(random_generator.uniform(0.75, 0.95), 4),
+            },
+            "domain": "synthetic_smoke",
+        })
+
+    with open(source_path, "w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    build_split(
+        source_path,
+        train_path,
+        eval_path,
+        manifest_path,
+        raw_train_target=4,
+        raw_eval_target=4,
+        seed=seed,
+    )
+
 
 if __name__ == "__main__":
     generate_smoke_data()

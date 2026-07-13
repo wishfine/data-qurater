@@ -17,6 +17,16 @@ def save_baseline(model_path, val_file):
     print(f"Model Path: {model_path}")
     print(f"Val File:   {val_file}")
     
+    # Fix random seed for reproducibility of baseline weights
+    import random
+    import numpy as np
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     device = "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.padding_side = "right"

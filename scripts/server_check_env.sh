@@ -151,14 +151,12 @@ if report["modelscope_version"] == "N/A":
         "python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple"
     )
 
-# Since backbone is now Qwen3.5-4B, flash-linear-attention and causal-conv1d are fast-path dependencies
+# Since backbone is now Qwen3.5-4B, flash-linear-attention and causal-conv1d are optional acceleration kernels
 if not report["fla_import_ok"]:
-    status = "FAIL"
-    failures.append("flash-linear-attention missing (fast-path for Qwen3.5)")
+    print("WARNING: flash-linear-attention is missing. Training will fallback to standard attention kernels.")
     
 if not report["causal_conv1d_import_ok"]:
-    status = "FAIL"
-    failures.append("causal-conv1d missing (fast-path for Qwen3.5)")
+    print("WARNING: causal-conv1d is missing. Training will fallback to standard linear operations.")
 
 report["status"] = status
 

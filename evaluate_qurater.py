@@ -38,13 +38,22 @@ def compute_auc(y_true: np.ndarray, y_scores: np.ndarray) -> Dict[str, Any]:
             "negative_count": neg_count
         }
         
-    sorted_indices = np.argsort(y_scores)
-    pos_labels_sorted = pos_labels[sorted_indices]
-    
-    ranks = np.arange(1, len(pos_labels) + 1)
-    pos_ranks_sum = np.sum(ranks * pos_labels_sorted)
-    
-    auc = (pos_ranks_sum - (pos_count * (pos_count + 1)) / 2) / (pos_count * neg_count)
+    try:
+        from sklearn.metrics import roc_auc_score
+        auc = roc_auc_score(pos_labels, y_scores)
+    except ImportError:
+        try:
+            from scipy.stats import rankdata
+            ranks = rankdata(y_scores)
+            pos_ranks_sum = np.sum(ranks * pos_labels)
+            auc = (pos_ranks_sum - (pos_count * (pos_count + 1)) / 2) / (pos_count * neg_count)
+        except ImportError:
+            sorted_indices = np.argsort(y_scores)
+            pos_labels_sorted = pos_labels[sorted_indices]
+            ranks = np.arange(1, len(pos_labels) + 1)
+            pos_ranks_sum = np.sum(ranks * pos_labels_sorted)
+            auc = (pos_ranks_sum - (pos_count * (pos_count + 1)) / 2) / (pos_count * neg_count)
+
     return {
         "auc": float(auc),
         "auc_status": "OK",

@@ -8,7 +8,12 @@ import shutil
 from typing import Dict, Any
 
 from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
-from train_qurater_qwen import bradley_terry_loss, save_modular_checkpoint
+from train_qurater_qwen import (
+    bradley_terry_loss,
+    save_modular_checkpoint,
+    should_flush_gradient_accumulation,
+)
+from evaluate_qurater import compute_auc
 
 class MockConfig:
     def __init__(self, hidden_size=64, pad_token_id=0, eos_token_id=1):
@@ -221,6 +226,21 @@ class TestQwenQuRater(unittest.TestCase):
         
         loss.backward()
         self.assertIsNotNone(ratings_a.grad)
+
+    def test_gradient_accumulation_flushes_only_a_partial_epoch(self):
+        """A remainder is flushed once, while exact accumulation needs no extra step."""
+        self.assertTrue(should_flush_gradient_accumulation(5, 4))
+        self.assertFalse(should_flush_gradient_accumulation(4, 4))
+        self.assertFalse(should_flush_gradient_accumulation(0, 4))
+
+    def test_auc_assigns_half_credit_to_tied_scores(self):
+        """Tied positive and negative predictions must use average ranks."""
+        result = compute_auc(
+            torch.tensor([0.0, 1.0]).numpy(),
+            torch.tensor([0.5, 0.5]).numpy(),
+        )
+        self.assertEqual(result["auc_status"], "OK")
+        self.assertAlmostEqual(result["auc"], 0.5)
 
     def test_checkpoint_saving_layout(self):
         """Test checkpoint saving writes correct modular directory layout structure"""

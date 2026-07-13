@@ -21,7 +21,6 @@ python3 evaluate_qurater.py \
     --eval_file "$EVAL_DATA" \
     --max_length 512 \
     --batch_size 4 \
-    --output_file "$OUTPUT_METRICS" \
-    --pooling_type last_token
+    --output_file "$OUTPUT_METRICS"
 
 echo "=== EVALUATION COMPLETED ==="
