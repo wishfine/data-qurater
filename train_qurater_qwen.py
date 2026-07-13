@@ -386,6 +386,39 @@ def main():
     else:
         model.to(device=device, dtype=dtype)
         
+    # Load model weights if resuming from checkpoint (must do before DDP wrapping)
+    if args.resume_from_checkpoint:
+        if is_main_process:
+            print(f"Loading model weights from checkpoint: {args.resume_from_checkpoint}")
+        
+        # 1. Load LoRA adapter weights
+        adapter_dir = os.path.join(args.resume_from_checkpoint, "adapter")
+        if args.use_lora:
+            from peft import set_peft_model_state_dict
+            from safetensors.torch import load_file
+            safetensors_path = os.path.join(adapter_dir, "adapter_model.safetensors")
+            bin_path = os.path.join(adapter_dir, "adapter_model.bin")
+            if os.path.exists(safetensors_path):
+                state_dict = load_file(safetensors_path, device=device)
+            else:
+                state_dict = torch.load(bin_path, map_location=device)
+            set_peft_model_state_dict(model.backbone, state_dict)
+        else:
+            backbone_path = os.path.join(adapter_dir, "backbone.pt")
+            if os.path.exists(backbone_path):
+                model.backbone.load_state_dict(torch.load(backbone_path, map_location=device))
+            
+        # 2. Load rating head weights
+        heads_path = os.path.join(args.resume_from_checkpoint, "rating_head.safetensors")
+        heads_bin_path = os.path.join(args.resume_from_checkpoint, "rating_head.pt")
+        if os.path.exists(heads_path):
+            from safetensors.torch import load_file
+            head_state = load_file(heads_path, device=device)
+            model.score.load_state_dict(head_state)
+        elif os.path.exists(heads_bin_path):
+            head_state = torch.load(heads_bin_path, map_location=device)
+            model.score.load_state_dict(head_state)
+            
     # Wrap in DistributedDataParallel for multi-GPU training
     if is_distributed:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -475,11 +508,11 @@ def main():
     start_epoch = 0
     if args.resume_from_checkpoint:
         if is_main_process:
-            print(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
+            print(f"Resuming optimizer/scheduler state from checkpoint: {args.resume_from_checkpoint}")
         checkpoint = torch.load(os.path.join(args.resume_from_checkpoint, "trainer_state.pt"), map_location=device)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        start_epoch = checkpoint["epoch"] + 1
+        start_epoch = int(checkpoint["epoch"])
 
     # 6. Training Loop
     optimizer_step = 0
