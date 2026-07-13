@@ -47,21 +47,24 @@ def bradley_terry_loss(
 def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, target_modules=None, optimizer=None, scheduler=None):
     os.makedirs(checkpoint_dir, exist_ok=True)
     
+    # Unwrap DDP model if necessary
+    raw_model = model.module if hasattr(model, "module") else model
+    
     # 1. Save LoRA adapter (under adapter/)
     adapter_dir = os.path.join(checkpoint_dir, "adapter")
     if args.use_lora:
-        model.backbone.save_pretrained(adapter_dir)
+        raw_model.backbone.save_pretrained(adapter_dir)
     else:
         os.makedirs(adapter_dir, exist_ok=True)
-        torch.save(model.backbone.state_dict(), os.path.join(adapter_dir, "backbone.pt"))
+        torch.save(raw_model.backbone.state_dict(), os.path.join(adapter_dir, "backbone.pt"))
         
     # 2. Save rating head (rating_head.safetensors)
     heads_path = os.path.join(checkpoint_dir, "rating_head.safetensors")
     try:
         from safetensors.torch import save_file
-        save_file(model.score.state_dict(), heads_path)
+        save_file(raw_model.score.state_dict(), heads_path)
     except ImportError:
-        torch.save(model.score.state_dict(), os.path.join(checkpoint_dir, "rating_head.pt"))
+        torch.save(raw_model.score.state_dict(), os.path.join(checkpoint_dir, "rating_head.pt"))
         
     # 3. Save tokenizer (tokenizer/)
     tokenizer_dir = os.path.join(checkpoint_dir, "tokenizer")
@@ -190,9 +193,13 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
     valid_auc_count = 0
     auc_values = []
     
-    print("\n" + "=" * 50)
-    print(f"VAL EVALUATION SUMMARY AT {epoch_name}")
-    print("=" * 50)
+    global_rank = int(os.environ.get("RANK", 0))
+    is_main = (global_rank == 0)
+    
+    if is_main:
+        print("\n" + "=" * 50)
+        print(f"VAL EVALUATION SUMMARY AT {epoch_name}")
+        print("=" * 50)
     
     for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
         targets = np.array(all_targets[dim_idx])
@@ -223,11 +230,12 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
         auc_val = auc_res["auc"]
         auc_str = f"{auc_val:.4f}" if auc_val is not None else "N/A"
         
-        print(f"Dimension: {dim_name}")
-        print(f"  Accuracy          : {accuracy:.4f}")
-        print(f"  Balanced Accuracy : {f'{balanced_acc:.4f}' if balanced_acc is not None else 'N/A'}")
-        print(f"  BCE Loss          : {bce_loss:.4f}")
-        print(f"  AUC Score         : {auc_str}")
+        if is_main:
+            print(f"Dimension: {dim_name}")
+            print(f"  Accuracy          : {accuracy:.4f}")
+            print(f"  Balanced Accuracy : {f'{balanced_acc:.4f}' if balanced_acc is not None else 'N/A'}")
+            print(f"  BCE Loss          : {bce_loss:.4f}")
+            print(f"  AUC Score         : {auc_str}")
         
         metrics_summary[dim_name] = {
             "accuracy": accuracy,
@@ -242,20 +250,22 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
     macro_accuracy_val = float(np.mean(macro_acc)) if macro_acc else 0.0
     macro_auc_val = float(np.mean(auc_values)) if valid_auc_count > 0 else None
     
-    print("-" * 50)
-    print(f"Macro Accuracy across Dimensions: {macro_accuracy_val:.4f}")
-    print(f"Macro AUC across Dimensions     : {f'{macro_auc_val:.4f}' if macro_auc_val is not None else 'N/A'}")
-    print("=" * 50 + "\n")
+    if is_main:
+        print("-" * 50)
+        print(f"Macro Accuracy across Dimensions: {macro_accuracy_val:.4f}")
+        print(f"Macro AUC across Dimensions     : {f'{macro_auc_val:.4f}' if macro_auc_val is not None else 'N/A'}")
+        print("=" * 50 + "\n")
     
     metrics_summary["macro_accuracy"] = macro_accuracy_val
     metrics_summary["macro_auc"] = macro_auc_val
     
-    eval_dir = os.path.join(os.path.dirname(args.output_dir), "evaluations")
-    os.makedirs(eval_dir, exist_ok=True)
-    eval_file_path = os.path.join(eval_dir, f"{epoch_name}_eval.json")
-    with open(eval_file_path, "w", encoding="utf-8") as f:
-        json.dump(metrics_summary, f, indent=2)
-    print(f"[EVALUATION] Saved metrics to: {eval_file_path}")
+    if is_main:
+        eval_dir = os.path.join(os.path.dirname(args.output_dir), "evaluations")
+        os.makedirs(eval_dir, exist_ok=True)
+        eval_file_path = os.path.join(eval_dir, f"{epoch_name}_eval.json")
+        with open(eval_file_path, "w", encoding="utf-8") as f:
+            json.dump(metrics_summary, f, indent=2)
+        print(f"[EVALUATION] Saved metrics to: {eval_file_path}")
     
     model.train()
     return metrics_summary
@@ -375,6 +385,15 @@ def main():
         model.score.to(device=device, dtype=dtype)
     else:
         model.to(device=device, dtype=dtype)
+        
+    # Wrap in DistributedDataParallel for multi-GPU training
+    if is_distributed:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False
+        )
     
     # Calculate parameter counts and ratios
     total_params = sum(p.numel() for p in model.parameters())
@@ -517,7 +536,8 @@ def main():
                 
                 # Check gradients on target server
                 if optimizer_step < 10 and is_main_process:
-                    head_grad_norm = sum(p.grad.norm().item() for p in model.score.parameters() if p.grad is not None)
+                    raw_model = model.module if hasattr(model, "module") else model
+                    head_grad_norm = sum(p.grad.norm().item() for p in raw_model.score.parameters() if p.grad is not None)
                     lora_grad_norm = sum(p.grad.norm().item() for name, p in model.named_parameters() if p.grad is not None and "lora_" in name)
                     
                     print(f"  [GRAD VERIFY] Joint Rating Head Gradient Norm: {head_grad_norm:.6f}")

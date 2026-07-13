@@ -21,9 +21,9 @@ echo "Train File : $TRAIN_FILE" | tee -a "$OUTPUT_FILE"
 echo "Val File   : $VAL_FILE" | tee -a "$OUTPUT_FILE"
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
 
-# Run 3 epochs with batch_size=4, grad_accum=4.
-# Evaluates and compares checkpoints automatically every 0.5 epochs.
-python train_qurater_qwen.py \
+# Run 3 epochs with batch_size=4, grad_accum=4 on 2 GPUs.
+# Evaluates and compares checkpoints automatically every 0.25 epochs.
+torchrun --nproc_per_node=2 train_qurater_qwen.py \
     --model_path "$MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --validation_file "$VAL_FILE" \
