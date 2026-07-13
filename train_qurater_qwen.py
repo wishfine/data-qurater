@@ -487,8 +487,9 @@ def main():
     checkpoint_0_dir = "outputs/qwen35_4b_experiment/checkpoint-0"
     if is_main_process:
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
-        if val_dataset is not None:
-            evaluate_model(model, val_dataset, device, args, "epoch_0.0")
+        
+    if val_dataset is not None:
+        evaluate_model(model, val_dataset, device, args, "epoch_0.0")
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
