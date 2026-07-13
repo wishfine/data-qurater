@@ -4,6 +4,7 @@ import os
 import torch
 from torch.utils.data import Dataset
 from typing import Dict, List, Any
+from qurater_utils import validate_normalized_record
 
 DIMENSION_NAMES = [
     "writing_style",
@@ -123,6 +124,7 @@ class NormalizedPairwiseDataset(Dataset):
                 
                 # Check if it is already in the normalized format
                 if "target" in item and "dimension_id" in item:
+                    validate_normalized_record(item)
                     examples.append(item)
                 # Check if it is in the raw Flat Pairwise format (from score_pairwise.py or raw JSONL)
                 elif "text_a" in item and "text_b" in item and "probs" in item:
@@ -174,6 +176,8 @@ class NormalizedPairwiseDataset(Dataset):
         return self.examples[idx]
         
     def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        for item in batch:
+            validate_normalized_record(item)
         texts_a = [item["text_a"] for item in batch]
         texts_b = [item["text_b"] for item in batch]
         

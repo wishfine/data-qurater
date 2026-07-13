@@ -6,25 +6,35 @@ set -euo pipefail
 
 # Environment Pre-check via python helper
 python scripts/check_environment_status.py
+python -c 'import torch; assert torch.cuda.device_count() >= 2, "server_run_train.sh requires at least 2 visible GPUs"'
 
 MODEL_PATH=${1:-"$(cat outputs/model_path.txt 2>/dev/null || echo 'Qwen/Qwen3.5-4B')"}
 TRAIN_FILE=${2:-"data/qurating/train.jsonl"}
 VAL_FILE=${3:-"data/qurating/eval.jsonl"}
+CONFIG_FILE=${4:-"configs/qwen3_06b_train.json"}
 
 mkdir -p reports/server outputs/qwen35_4b_experiment/evaluations
 OUTPUT_FILE="reports/server/full_train_output.txt"
+
+python scripts/check_train_eval_overlap.py \
+    --train_file "$TRAIN_FILE" \
+    --eval_file "$VAL_FILE" \
+    --output_report "reports/server/full_train_overlap_report.json" \
+    --skip_manifest_check
 
 echo "=== RUNNING QWEN3.5-4B FULL TRAINING ===" | tee "$OUTPUT_FILE"
 echo "Timestamp  : $(date)" | tee -a "$OUTPUT_FILE"
 echo "Model Path : $MODEL_PATH" | tee -a "$OUTPUT_FILE"
 echo "Train File : $TRAIN_FILE" | tee -a "$OUTPUT_FILE"
 echo "Val File   : $VAL_FILE" | tee -a "$OUTPUT_FILE"
+echo "Config File: $CONFIG_FILE" | tee -a "$OUTPUT_FILE"
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
 
 # Run 3 epochs with batch_size=4 and grad_accum=4 on 2 GPUs.
 # Checkpoints are saved every 0.25 epoch. Full validation runs after torchrun exits,
 # avoiding NCCL watchdog timeouts while one rank evaluates.
 torchrun --nproc_per_node=2 train_qurater_qwen.py \
+    --config "$CONFIG_FILE" \
     --model_path "$MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --validation_file "$VAL_FILE" \

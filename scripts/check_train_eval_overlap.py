@@ -15,7 +15,7 @@ def get_sha256(path):
 def normalize_text(text):
     return " ".join(text.strip().split())
 
-def check_overlap(train_path, eval_path, manifest_path, output_report_path):
+def check_overlap(train_path, eval_path, manifest_path, output_report_path, require_manifest=True):
     print("=== RUNNING ENHANCED TRAIN-EVAL OVERLAP & LEAKAGE CHECK ===")
     
     train_sha = get_sha256(train_path)
@@ -28,7 +28,12 @@ def check_overlap(train_path, eval_path, manifest_path, output_report_path):
     train_hash_matches = False
     eval_hash_matches = False
     
-    if os.path.exists(manifest_path):
+    if not require_manifest:
+        manifest_matches_current_files = True
+        source_hash_matches = "SKIPPED"
+        train_hash_matches = "SKIPPED"
+        eval_hash_matches = "SKIPPED"
+    elif os.path.exists(manifest_path):
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
@@ -105,7 +110,7 @@ def check_overlap(train_path, eval_path, manifest_path, output_report_path):
     # 4. Swapped pair overlap
     # 5. Shared single text count > 0 (Leakage)
     has_failed = (
-        not manifest_matches_current_files
+        (require_manifest and not manifest_matches_current_files)
         or same_file_content
         or exact_pair_overlap_count > 0
         or swapped_pair_overlap_count > 0
@@ -160,6 +165,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_file", type=str, required=True)
     parser.add_argument("--manifest_file", type=str, default="data/qurating/smoke_split_manifest.json")
     parser.add_argument("--output_report", type=str, default="reports/server/train_eval_overlap_report.json")
+    parser.add_argument("--skip_manifest_check", action="store_true", help="Audit overlap when no split manifest exists")
     args = parser.parse_args()
     
-    check_overlap(args.train_file, args.eval_file, args.manifest_file, args.output_report)
+    check_overlap(args.train_file, args.eval_file, args.manifest_file, args.output_report, not args.skip_manifest_check)

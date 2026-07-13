@@ -15,6 +15,7 @@ from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warm
 
 from models.qwen_qurater import QwenQuRater, DIMENSION_NAMES
 from data.qurating_dataset import NormalizedPairwiseDataset
+from qurater_utils import resolve_run_paths
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -50,7 +51,7 @@ def should_flush_gradient_accumulation(micro_step: int, gradient_accumulation_st
         raise ValueError("gradient_accumulation_steps must be positive")
     return micro_step > 0 and micro_step % gradient_accumulation_steps != 0
 
-def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, target_modules=None, optimizer=None, scheduler=None):
+def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, target_modules=None, optimizer=None, scheduler=None, progress=None):
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     # Unwrap DDP model if necessary
@@ -101,6 +102,8 @@ def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, targe
     state = {
         "epoch": epoch,
     }
+    if progress is not None:
+        state["progress"] = progress
     if optimizer is not None:
         state["optimizer"] = optimizer.state_dict()
     if scheduler is not None:
@@ -109,7 +112,8 @@ def save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch, targe
     print(f"[CHECKPOINT] Saved modular checkpoint directory to: {checkpoint_dir}")
 
 def save_experiment_metadata(args, val_dataset):
-    os.makedirs("outputs/qwen35_4b_experiment", exist_ok=True)
+    paths = resolve_run_paths(args.output_dir)
+    os.makedirs(paths["metadata_dir"], exist_ok=True)
     
     # Helper to calculate file SHA256
     def get_sha256(path):
@@ -136,11 +140,11 @@ def save_experiment_metadata(args, val_dataset):
         "confidence_threshold": args.confidence_threshold,
         "dimensions": DIMENSION_NAMES
     }
-    with open("outputs/qwen35_4b_experiment/eval_manifest.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(paths["metadata_dir"], "eval_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         
     # 2. Save experiment_config.json
-    with open("outputs/qwen35_4b_experiment/experiment_config.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(paths["metadata_dir"], "experiment_config.json"), "w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2)
 
 def evaluate_model(model, val_dataset, device, args, epoch_name):
@@ -266,7 +270,7 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
     metrics_summary["macro_auc"] = macro_auc_val
     
     if is_main:
-        eval_dir = os.path.join(os.path.dirname(args.output_dir), "evaluations")
+        eval_dir = resolve_run_paths(args.output_dir)["evaluations_dir"]
         os.makedirs(eval_dir, exist_ok=True)
         eval_file_path = os.path.join(eval_dir, f"{epoch_name}_eval.json")
         with open(eval_file_path, "w", encoding="utf-8") as f:
@@ -277,7 +281,18 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
     return metrics_summary
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train QwenQuRater with Bradley-Terry Pairwise Loss")
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=str, default=None, help="Optional JSON experiment configuration")
+    config_args, _ = config_parser.parse_known_args()
+    config_defaults = {}
+    if config_args.config:
+        with open(config_args.config, "r", encoding="utf-8") as f:
+            config_defaults = json.load(f)
+        if not isinstance(config_defaults, dict):
+            raise ValueError("Experiment config must be a JSON object")
+
+    parser = argparse.ArgumentParser(description="Train QwenQuRater with Bradley-Terry Pairwise Loss", parents=[config_parser])
+    parser.set_defaults(**config_defaults)
     parser.add_argument("--model_path", type=str, required=True, help="Path to base Qwen3.5-4B model")
     parser.add_argument("--train_file", type=str, required=True, help="Path to pairwise training json/jsonl")
     parser.add_argument("--validation_file", type=str, default=None, help="Path to pairwise validation json/jsonl")
@@ -299,6 +314,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--max_optimizer_steps", type=int, default=None, help="Stop training after reaching this number of optimizer steps")
+    parser.add_argument("--log_every_steps", type=int, default=50, help="Optimizer-step logging interval after warmup diagnostics")
     parser.add_argument("--evaluate_before_training", action="store_true", help="Evaluate checkpoint-0 before training begins on every DDP rank")
     parser.add_argument("--evaluate_during_training", action="store_true", help="Evaluate each saved checkpoint on every DDP rank")
     return parser.parse_args()
@@ -496,7 +512,7 @@ def main():
         save_experiment_metadata(args, val_dataset)
 
     # 5. Save untrained checkpoint-0 baseline BEFORE any optimizer steps
-    checkpoint_0_dir = "outputs/qwen35_4b_experiment/checkpoint-0"
+    checkpoint_0_dir = resolve_run_paths(args.output_dir)["checkpoint_0"]
     if is_main_process:
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
         
@@ -519,16 +535,20 @@ def main():
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps)
     
     start_epoch = 0
+    start_batch_index = 0
+    optimizer_step = 0
     if args.resume_from_checkpoint:
         if is_main_process:
             print(f"Resuming optimizer/scheduler state from checkpoint: {args.resume_from_checkpoint}")
         checkpoint = torch.load(os.path.join(args.resume_from_checkpoint, "trainer_state.pt"), map_location=device)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        start_epoch = int(checkpoint["epoch"])
+        progress = checkpoint.get("progress", {})
+        start_epoch = int(progress.get("next_epoch", checkpoint["epoch"]))
+        start_batch_index = int(progress.get("next_batch_index", 0))
+        optimizer_step = int(progress.get("optimizer_step", 0))
 
     # 6. Training Loop
-    optimizer_step = 0
     stop_training = False
     
     for epoch in range(start_epoch, args.num_train_epochs):
@@ -545,6 +565,8 @@ def main():
         optimizer_times = []
         
         for step, batch in enumerate(train_loader):
+            if epoch == start_epoch and step < start_batch_index:
+                continue
             micro_step += 1
             step_start = time.time()
             
@@ -604,7 +626,7 @@ def main():
                 opt_time = time.time() - opt_start
                 optimizer_times.append(opt_time)
                 
-                if is_main_process:
+                if is_main_process and (optimizer_step <= 10 or optimizer_step % args.log_every_steps == 0):
                     print(f"  [STEP] micro_step: {micro_step} | optimizer_step: {optimizer_step}")
                 
                 # Check for 0.25-epoch intervals (excluding full epochs, which are handled at the end of the epoch loop)
@@ -616,7 +638,9 @@ def main():
                     if is_main_process:
                         print(f"\n[INTERVAL] Reached {epoch_name} (step {optimizer_step}). Saving checkpoint...")
                         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{epoch_name.replace('_', '-')}")
-                        save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
+                        save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler, {
+                            "next_epoch": epoch, "next_batch_index": step + 1, "optimizer_step": optimizer_step,
+                        })
                     if val_dataset is not None and args.evaluate_during_training:
                         evaluate_model(model, val_dataset, device, args, epoch_name)
                             
@@ -626,7 +650,9 @@ def main():
                     checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-step-{optimizer_step}")
                     if is_main_process:
                         print(f"\n[SAFETY CHECKPOINT] Reached step {optimizer_step}. Saving recovery checkpoint to {checkpoint_dir}...")
-                        save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
+                        save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler, {
+                            "next_epoch": epoch, "next_batch_index": step + 1, "optimizer_step": optimizer_step,
+                        })
                     
                 if args.max_optimizer_steps is not None and optimizer_step >= args.max_optimizer_steps:
                     stop_training = True
@@ -665,7 +691,9 @@ def main():
         if is_main_process:
             print(f"\nEpoch {epoch+1} Complete. Avg Pairwise loss: {avg_loss:.4f}")
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
-            save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler)
+            save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler, {
+                "next_epoch": epoch + 1, "next_batch_index": 0, "optimizer_step": optimizer_step,
+            })
         if val_dataset is not None and args.evaluate_during_training:
             evaluate_model(model, val_dataset, device, args, f"epoch_{float(epoch+1)}")
             
