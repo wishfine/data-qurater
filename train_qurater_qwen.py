@@ -540,12 +540,12 @@ def main():
                 if is_main_process:
                     print(f"  [STEP] micro_step: {micro_step} | optimizer_step: {optimizer_step}")
                 
-                # Check for 0.5-epoch intervals (excluding full epochs, which are handled at the end of the epoch loop)
+                # Check for 0.25-epoch intervals (excluding full epochs, which are handled at the end of the epoch loop)
                 steps_per_epoch = len(train_loader) // args.gradient_accumulation_steps
-                half_epoch_steps = max(1, steps_per_epoch // 2)
-                if optimizer_step > 0 and (optimizer_step % half_epoch_steps == 0) and (optimizer_step % steps_per_epoch != 0):
+                quarter_epoch_steps = max(1, steps_per_epoch // 4)
+                if optimizer_step > 0 and (optimizer_step % quarter_epoch_steps == 0) and (optimizer_step % steps_per_epoch != 0):
                     epoch_decimal = optimizer_step / steps_per_epoch
-                    epoch_name = f"epoch_{epoch_decimal:.1f}"
+                    epoch_name = f"epoch_{epoch_decimal:.2f}"
                     if is_main_process:
                         print(f"\n[INTERVAL] Reached {epoch_name} (step {optimizer_step}). Saving checkpoint and evaluating...")
                         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{epoch_name.replace('_', '-')}")
