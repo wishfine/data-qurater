@@ -35,6 +35,8 @@ torchrun --nproc_per_node=2 train_qurater_qwen.py \
     --num_train_epochs 3 \
     --bf16 \
     --confidence_threshold 0.5 \
+    --max_train_samples 64000 \
+    --max_eval_samples 5000 \
     --seed 42 2>&1 | tee -a "$OUTPUT_FILE"
 
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
