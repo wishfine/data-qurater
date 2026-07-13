@@ -299,7 +299,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--max_optimizer_steps", type=int, default=None, help="Stop training after reaching this number of optimizer steps")
-    parser.add_argument("--evaluate_before_training", action="store_true", help="Evaluate checkpoint-0 before training begins")
+    parser.add_argument("--evaluate_before_training", action="store_true", help="Evaluate checkpoint-0 before training begins on every DDP rank")
+    parser.add_argument("--evaluate_during_training", action="store_true", help="Evaluate each saved checkpoint on every DDP rank")
     return parser.parse_args()
 
 def main():
@@ -500,12 +501,7 @@ def main():
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
         
     if val_dataset is not None and args.evaluate_before_training:
-        if is_distributed:
-            torch.distributed.barrier()
-        if is_main_process:
-            evaluate_model(model, val_dataset, device, args, "epoch_0.0")
-        if is_distributed:
-            torch.distributed.barrier()
+        evaluate_model(model, val_dataset, device, args, "epoch_0.0")
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
@@ -617,16 +613,12 @@ def main():
                 if optimizer_step > 0 and (optimizer_step % quarter_epoch_steps == 0) and (optimizer_step % steps_per_epoch != 0):
                     epoch_decimal = optimizer_step / steps_per_epoch
                     epoch_name = f"epoch_{epoch_decimal:.2f}"
-                    if is_distributed:
-                        torch.distributed.barrier()
                     if is_main_process:
-                        print(f"\n[INTERVAL] Reached {epoch_name} (step {optimizer_step}). Saving checkpoint and evaluating...")
+                        print(f"\n[INTERVAL] Reached {epoch_name} (step {optimizer_step}). Saving checkpoint...")
                         checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{epoch_name.replace('_', '-')}")
                         save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
-                        if val_dataset is not None:
-                            evaluate_model(model, val_dataset, device, args, epoch_name)
-                    if is_distributed:
-                        torch.distributed.barrier()
+                    if val_dataset is not None and args.evaluate_during_training:
+                        evaluate_model(model, val_dataset, device, args, epoch_name)
                             
                 # Periodic safety checkpoints every 5000 steps to prevent loss of progress
                 if optimizer_step > 0 and (optimizer_step % 5000 == 0):
@@ -670,16 +662,12 @@ def main():
 
         # Epoch checkpoint
         avg_loss = epoch_loss / len(train_loader)
-        if is_distributed:
-            torch.distributed.barrier()
         if is_main_process:
             print(f"\nEpoch {epoch+1} Complete. Avg Pairwise loss: {avg_loss:.4f}")
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
             save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler)
-            if val_dataset is not None:
-                evaluate_model(model, val_dataset, device, args, f"epoch_{float(epoch+1)}")
-        if is_distributed:
-            torch.distributed.barrier()
+        if val_dataset is not None and args.evaluate_during_training:
+            evaluate_model(model, val_dataset, device, args, f"epoch_{float(epoch+1)}")
             
         if stop_training:
             if is_main_process:
