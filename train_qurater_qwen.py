@@ -430,11 +430,13 @@ def main():
             
     # Wrap in DistributedDataParallel for multi-GPU training
     if is_distributed:
+        if is_main_process:
+            print("[DDP] Enabling unused-parameter detection for Qwen hybrid/LoRA modules.")
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=False
+            find_unused_parameters=True
         )
     
     # Calculate parameter counts and ratios
