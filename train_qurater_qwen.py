@@ -141,7 +141,9 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
         val_dataset,
         batch_size=args.per_device_train_batch_size,
         shuffle=False,
-        collate_fn=val_dataset.collate_fn
+        collate_fn=val_dataset.collate_fn,
+        num_workers=4,
+        pin_memory=True
     )
     
     from evaluate_qurater import (
@@ -441,7 +443,9 @@ def main():
         batch_size=args.per_device_train_batch_size,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        collate_fn=train_dataset.collate_fn
+        collate_fn=train_dataset.collate_fn,
+        num_workers=4,
+        pin_memory=True
     )
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
@@ -548,6 +552,14 @@ def main():
                         save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
                         if val_dataset is not None:
                             evaluate_model(model, val_dataset, device, args, epoch_name)
+                            
+                # Periodic safety checkpoints every 5000 steps to prevent loss of progress
+                if optimizer_step > 0 and (optimizer_step % 5000 == 0):
+                    epoch_decimal = optimizer_step / steps_per_epoch
+                    checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-step-{optimizer_step}")
+                    if is_main_process:
+                        print(f"\n[SAFETY CHECKPOINT] Reached step {optimizer_step}. Saving recovery checkpoint to {checkpoint_dir}...")
+                        save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler)
                     
                 if args.max_optimizer_steps is not None and optimizer_step >= args.max_optimizer_steps:
                     stop_training = True
