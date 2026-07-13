@@ -412,7 +412,8 @@ def main():
                 head_params.append((name, param))
                 
     if is_main_process:
-        config = model.backbone.config
+        raw_model = model.module if hasattr(model, "module") else model
+        config = raw_model.backbone.config
         if hasattr(config, "text_config"):
             config = config.text_config
         hidden_size = getattr(config, "hidden_size", getattr(config, "hidden_dim", "Unknown"))
