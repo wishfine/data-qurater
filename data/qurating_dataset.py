@@ -55,7 +55,12 @@ class NormalizedPairwiseDataset(Dataset):
                         pass
                     break
                     
-        if self.is_flat_format:
+        # Force in-memory loading for small subsets (<= 200000 samples) for speed and DDP multiprocessing safety
+        if max_samples is not None and max_samples <= 200000:
+            print(f"[INFO] Loading small dataset {data_path} in-memory ({max_samples} samples max)...")
+            self.use_lazy_loading = False
+            self.examples = self._load_data(data_path, max_samples)
+        elif self.is_flat_format:
             print(f"[INFO] File {data_path} is in legacy flat format. Loading in-memory...")
             self.use_lazy_loading = False
             self.examples = self._load_data(data_path, max_samples)

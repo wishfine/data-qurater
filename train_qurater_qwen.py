@@ -145,8 +145,8 @@ def evaluate_model(model, val_dataset, device, args, epoch_name):
         batch_size=args.per_device_train_batch_size,
         shuffle=False,
         collate_fn=val_dataset.collate_fn,
-        num_workers=4,
-        pin_memory=True
+        num_workers=0,
+        pin_memory=False
     )
     
     from evaluate_qurater import (
@@ -498,8 +498,8 @@ def main():
         sampler=train_sampler,
         shuffle=(train_sampler is None),
         collate_fn=train_dataset.collate_fn,
-        num_workers=4,
-        pin_memory=True
+        num_workers=0,
+        pin_memory=False
     )
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
