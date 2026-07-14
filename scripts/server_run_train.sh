@@ -46,8 +46,8 @@ fi
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
 
 # Run 3 epochs with batch_size=4 and grad_accum=4 on 2 GPUs.
-# Checkpoints are saved every 0.25 epoch. Full validation runs after torchrun exits,
-# avoiding NCCL watchdog timeouts while one rank evaluates.
+# Checkpoints are saved every 0.25 epoch. Evaluation is intentionally omitted;
+# run evaluate_qurater.py separately on an available GPU after training.
 torchrun --nproc_per_node=2 train_qurater_qwen.py \
     --config "$CONFIG_FILE" \
     --model_path "$MODEL_PATH" \
@@ -62,30 +62,8 @@ torchrun --nproc_per_node=2 train_qurater_qwen.py \
     --bf16 \
     --confidence_threshold 0.5 \
     --max_train_samples 64000 \
-    --max_eval_samples 5000 \
     --seed 42 \
     "${RESUME_ARGS[@]}" 2>&1 | tee -a "$OUTPUT_FILE"
 
 echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
-echo "=== RUNNING FINAL SINGLE-PROCESS EVALUATION ===" | tee -a "$OUTPUT_FILE"
-
-python evaluate_qurater.py \
-    --model_path "$MODEL_PATH" \
-    --checkpoint_dir "outputs/qwen35_4b_experiment/checkpoints/checkpoint-final" \
-    --eval_file "$VAL_FILE" \
-    --max_length 512 \
-    --batch_size 4 \
-    --output_file "outputs/qwen35_4b_experiment/evaluations/epoch_3.0_eval.json" 2>&1 | tee -a "$OUTPUT_FILE"
-
-echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
-echo "=== GENERATING CHECKPOINT COMPARISON TABLE ===" | tee -a "$OUTPUT_FILE"
-
-# Generate comparison table for all 0.5-epoch checkpoints
-python compare_checkpoints.py \
-    --eval_dir "outputs/qwen35_4b_experiment/evaluations" \
-    --output_md "reports/server/training_comparison.md" \
-    --output_json "reports/server/training_comparison.json" \
-    --learning_curve "outputs/qwen35_4b_experiment/evaluations/learning_curve.csv" 2>&1 | tee -a "$OUTPUT_FILE"
-
-echo "----------------------------------------" | tee -a "$OUTPUT_FILE"
-echo "Full training and evaluation comparisons complete. Saved to $OUTPUT_FILE"
+echo "Training complete. Evaluation was skipped by design; run evaluate_qurater.py separately." | tee -a "$OUTPUT_FILE"

@@ -26,7 +26,6 @@ python3 train_qurater_qwen.py \
     --learning_rate 2e-5 \
     --num_train_epochs 1 \
     --max_train_samples 8 \
-    --max_eval_samples 8 \
     --use_lora \
     --seed 42
 

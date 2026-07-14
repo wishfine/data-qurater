@@ -147,139 +147,6 @@ def save_experiment_metadata(args, val_dataset):
     with open(os.path.join(paths["metadata_dir"], "experiment_config.json"), "w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2)
 
-def evaluate_model(model, val_dataset, device, args, epoch_name):
-    model.eval()
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.per_device_train_batch_size,
-        shuffle=False,
-        collate_fn=val_dataset.collate_fn,
-        num_workers=0,
-        pin_memory=False
-    )
-    
-    from evaluate_qurater import (
-        compute_auc, 
-        compute_balanced_accuracy, 
-        get_distribution_stats, 
-        compute_confidence_buckets
-    )
-    
-    all_targets = {dim_idx: [] for dim_idx in range(4)}
-    all_preds = {dim_idx: [] for dim_idx in range(4)}
-    all_diffs = {dim_idx: [] for dim_idx in range(4)}
-    all_confidences = {dim_idx: [] for dim_idx in range(4)}
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            input_ids_a = batch["input_ids_a"].to(device)
-            attention_mask_a = batch["attention_mask_a"].to(device)
-            input_ids_b = batch["input_ids_b"].to(device)
-            attention_mask_b = batch["attention_mask_b"].to(device)
-            targets = batch["targets"].to(device)
-            dimension_ids = batch["dimension_ids"].to(device)
-            confidences = batch["confidences"].to(device)
-            
-            ratings_a = model(input_ids_a, attention_mask_a)
-            ratings_b = model(input_ids_b, attention_mask_b)
-            
-            for i in range(input_ids_a.size(0)):
-                dim_idx = int(dimension_ids[i].item())
-                r_a = ratings_a[i, dim_idx].cpu().float().item()
-                r_b = ratings_b[i, dim_idx].cpu().float().item()
-                gt = targets[i].cpu().float().item()
-
-                logit = r_b - r_a
-                p_pred = 1.0 / (1.0 + np.exp(-logit))
-                
-                all_targets[dim_idx].append(gt)
-                all_preds[dim_idx].append(p_pred)
-                all_diffs[dim_idx].append(logit)
-                all_confidences[dim_idx].append(confidences[i].cpu().float().item())
-
-    metrics_summary = {}
-    macro_acc = []
-    valid_auc_count = 0
-    auc_values = []
-    
-    global_rank = int(os.environ.get("RANK", 0))
-    is_main = (global_rank == 0)
-    
-    if is_main:
-        print("\n" + "=" * 50)
-        print(f"VAL EVALUATION SUMMARY AT {epoch_name}")
-        print("=" * 50)
-    
-    for dim_idx, dim_name in enumerate(DIMENSION_NAMES):
-        targets = np.array(all_targets[dim_idx])
-        preds = np.array(all_preds[dim_idx])
-        diffs = np.array(all_diffs[dim_idx])
-        
-        if len(targets) == 0:
-            continue
-            
-        bce_loss = float(-np.mean(targets * np.log(np.clip(preds, 1e-7, 1-1e-7)) + (1.0 - targets) * np.log(np.clip(1.0 - preds, 1e-7, 1-1e-7))))
-        
-        pred_label = (preds > 0.5).astype(int)
-        gt_label = (targets > 0.5).astype(int)
-        
-        accuracy = float(np.mean(pred_label == gt_label))
-        macro_acc.append(accuracy)
-        
-        balanced_acc = compute_balanced_accuracy(gt_label, pred_label)
-        auc_res = compute_auc(targets, preds)
-        if auc_res["auc_status"] == "OK":
-            valid_auc_count += 1
-            auc_values.append(auc_res["auc"])
-            
-        diff_stats = get_distribution_stats(diffs)
-        prob_stats = get_distribution_stats(preds)
-        buckets = compute_confidence_buckets(targets, preds)
-        
-        auc_val = auc_res["auc"]
-        auc_str = f"{auc_val:.4f}" if auc_val is not None else "N/A"
-        
-        if is_main:
-            print(f"Dimension: {dim_name}")
-            print(f"  Accuracy          : {accuracy:.4f}")
-            print(f"  Balanced Accuracy : {f'{balanced_acc:.4f}' if balanced_acc is not None else 'N/A'}")
-            print(f"  BCE Loss          : {bce_loss:.4f}")
-            print(f"  AUC Score         : {auc_str}")
-        
-        metrics_summary[dim_name] = {
-            "accuracy": accuracy,
-            "balanced_accuracy": balanced_acc,
-            "bce_loss": bce_loss,
-            "auc": auc_val,
-            "score_diff_distribution": diff_stats,
-            "prob_distribution": prob_stats,
-            "confidence_buckets": buckets
-        }
-        
-    macro_accuracy_val = float(np.mean(macro_acc)) if macro_acc else 0.0
-    macro_auc_val = float(np.mean(auc_values)) if valid_auc_count > 0 else None
-    
-    if is_main:
-        print("-" * 50)
-        print(f"Macro Accuracy across Dimensions: {macro_accuracy_val:.4f}")
-        print(f"Macro AUC across Dimensions     : {f'{macro_auc_val:.4f}' if macro_auc_val is not None else 'N/A'}")
-        print("=" * 50 + "\n")
-    
-    metrics_summary["macro_accuracy"] = macro_accuracy_val
-    metrics_summary["macro_auc"] = macro_auc_val
-    
-    if is_main:
-        eval_dir = resolve_run_paths(args.output_dir)["evaluations_dir"]
-        os.makedirs(eval_dir, exist_ok=True)
-        eval_file_path = os.path.join(eval_dir, f"{epoch_name}_eval.json")
-        with open(eval_file_path, "w", encoding="utf-8") as f:
-            json.dump(metrics_summary, f, indent=2)
-        print(f"[EVALUATION] Saved metrics to: {eval_file_path}")
-    
-    model.train()
-    return metrics_summary
-
 def parse_args():
     config_parser = argparse.ArgumentParser(add_help=False)
     config_parser.add_argument("--config", type=str, default=None, help="Optional JSON experiment configuration")
@@ -303,7 +170,6 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--max_train_samples", type=int, default=None, help="Limit number of training samples")
-    parser.add_argument("--max_eval_samples", type=int, default=None, help="Limit number of evaluation samples")
     parser.add_argument("--use_lora", action="store_true", default=True, help="Use LoRA")
     parser.add_argument("--no_lora", action="store_false", dest="use_lora", help="Disable LoRA")
     parser.add_argument("--use_4bit", action="store_true", default=False, help="Quantize backbone model to 4-bit NF4")
@@ -315,8 +181,6 @@ def parse_args():
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--max_optimizer_steps", type=int, default=None, help="Stop training after reaching this number of optimizer steps")
     parser.add_argument("--log_every_steps", type=int, default=50, help="Optimizer-step logging interval after warmup diagnostics")
-    parser.add_argument("--evaluate_before_training", action="store_true", help="Evaluate checkpoint-0 before training begins on every DDP rank")
-    parser.add_argument("--evaluate_during_training", action="store_true", help="Evaluate each saved checkpoint on every DDP rank")
     return parser.parse_args()
 
 def main():
@@ -503,22 +367,18 @@ def main():
     # 4. Load datasets
     train_dataset = NormalizedPairwiseDataset(args.train_file, tokenizer, args.max_length, args.max_train_samples)
     
-    val_dataset = None
-    if args.validation_file:
-        val_dataset = NormalizedPairwiseDataset(args.validation_file, tokenizer, args.max_length, args.max_eval_samples)
-        
     # Save experiment configs and validation manifest
     if is_main_process:
-        save_experiment_metadata(args, val_dataset)
+        # Validation data is evaluated separately by evaluate_qurater.py.
+        # Keep only the file path/hash in the experiment manifest; do not load it
+        # or run validation inside the distributed training process.
+        save_experiment_metadata(args, None)
 
     # 5. Save untrained checkpoint-0 baseline BEFORE any optimizer steps
     checkpoint_0_dir = resolve_run_paths(args.output_dir)["checkpoint_0"]
     if is_main_process:
         save_modular_checkpoint(model, tokenizer, checkpoint_0_dir, args, epoch=0, target_modules=target_modules)
         
-    if val_dataset is not None and args.evaluate_before_training:
-        evaluate_model(model, val_dataset, device, args, "epoch_0.0")
-
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
         train_dataset,
@@ -641,9 +501,6 @@ def main():
                         save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch_decimal, target_modules, optimizer, scheduler, {
                             "next_epoch": epoch, "next_batch_index": step + 1, "optimizer_step": optimizer_step,
                         })
-                    if val_dataset is not None and args.evaluate_during_training:
-                        evaluate_model(model, val_dataset, device, args, epoch_name)
-                            
                 # Periodic safety checkpoints every 5000 steps to prevent loss of progress
                 if optimizer_step > 0 and (optimizer_step % 5000 == 0):
                     epoch_decimal = optimizer_step / steps_per_epoch
@@ -694,9 +551,6 @@ def main():
             save_modular_checkpoint(model, tokenizer, checkpoint_dir, args, epoch+1, target_modules, optimizer, scheduler, {
                 "next_epoch": epoch + 1, "next_batch_index": 0, "optimizer_step": optimizer_step,
             })
-        if val_dataset is not None and args.evaluate_during_training:
-            evaluate_model(model, val_dataset, device, args, f"epoch_{float(epoch+1)}")
-            
         if stop_training:
             if is_main_process:
                 print(f"Reached max_optimizer_steps: {args.max_optimizer_steps}. Stopping training.")
